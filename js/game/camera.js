@@ -15,11 +15,15 @@
 
   class Camera {
     constructor(range) {
-      this.range = range;
-      this.eyeH = range.eyeHeight;
       this.kickPitch = 0;
       this.kickYaw = 0;
+      this.setRange(range);
       this.resize(1280, 720);
+    }
+    setRange(range) {
+      this.range = range;
+      this.eyeH = range.eyeHeight;
+      this.resetKick();
     }
     resize(W, H) {
       this.W = W;
@@ -63,7 +67,11 @@
       o.y = this.eyeH - ((py - this.cy - this.offY) / this.f) * z;
       return o;
     }
-    /** First static surface (floor, walls, ceiling, back berm) hit by the ray through a screen point. */
+    /**
+     * First static surface hit by the ray through a screen point: floor,
+     * ceiling, side walls (only up to their height), the backstop (only up
+     * to its height), otherwise open sky.
+     */
     backdropHit(px, py) {
       const r = this.range;
       const dx = (px - this.cx - this.offX) / this.f;
@@ -76,21 +84,23 @@
           z = zf;
           surface = 'floor';
         }
-      } else if (dy > 0) {
+      } else if (dy > 0 && r.ceiling != null) {
         const zc = (r.ceiling - this.eyeH) / dy;
         if (zc < z) {
           z = zc;
           surface = 'ceiling';
         }
       }
-      if (dx !== 0) {
+      if (dx !== 0 && r.wallHeight > 0) {
         const zw = r.halfWidth / Math.abs(dx);
-        if (zw < z) {
+        if (zw < z && this.eyeH + dy * zw <= r.wallHeight) {
           z = zw;
           surface = 'wall';
         }
       }
-      return { x: dx * z, y: this.eyeH + dy * z, z, surface };
+      const y = this.eyeH + dy * z;
+      if (surface === 'back' && y > r.backHeight) surface = 'sky';
+      return { x: dx * z, y, z, surface };
     }
   }
 

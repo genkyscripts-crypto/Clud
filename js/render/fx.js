@@ -1,7 +1,9 @@
 /*
  * Pooled feedback effects: sparks, glass shards, ink droplets, debris, dust,
  * rings, casings, muzzle smoke, bullet-hole decals, damage numbers, cash
- * popups, hit markers, screen shake and flashes.
+ * popups, hit markers, screen shake and flashes. Plus the loud ones:
+ * explosions (blast, embers, smoke billows, scorch), tracers, rail beams,
+ * arc lightning, ricochet streaks and the boss-down sequence.
  *
  * Every effect lives in a fixed RingPool, so long sessions can never grow
  * memory or draw cost. World effects are stored without the recoil offset and
@@ -14,7 +16,10 @@
   const P = ZTA.palette;
   const paint = ZTA.paint;
 
-  const LIMITS = { particles: 520, screen: 90, decals: 48, labels: 36 };
+  const LIMITS = { particles: 520, screen: 90, decals: 48, labels: 36, links: 32 };
+
+  /** Visible round per audio profile; the rest (pistols, SMGs, shotguns) stay invisible. */
+  const TRACERS = { rifle: 'tracer', battle: 'tracer', lmg: 'tracer', minigun: 'tracer', marksman: 'heavy', rail: 'beam', arc: 'arc', needle: 'needle' };
 
   class FX {
     constructor(game) {
@@ -23,6 +28,10 @@
       this.screen = new ZTA.RingPool(LIMITS.screen, () => ({}));
       this.decals = new ZTA.RingPool(LIMITS.decals, () => ({}));
       this.labels = new ZTA.RingPool(LIMITS.labels, () => ({}));
+      this.links = new ZTA.RingPool(LIMITS.links, () => ({}));
+      this.pending = [];
+      /** Set by the viewmodel: () => { x, y } muzzle position on screen. */
+      this.muzzleAt = null;
       this.hit = { age: 9, kind: 'hit' };
       this.trauma = 0;
       this.shakeX = 0;
@@ -51,11 +60,22 @@
       ev.on('target:broken', (e) => this._targetBroken(e));
       ev.on('target:landed', (e) => {
         const c = ZTA.TargetArt.center(e.target, this.game.camera, this._c);
-        this._dust(c.sx, c.sy + e.target.radius * c.s, c.s * 0.25, 5);
+        const drop = e.target.kind === 'plate' ? e.target.radius : 0.1;
+        this._dust(c.sx, c.sy + drop * c.s, c.s * 0.25, e.target.kind === 'plate' ? 5 : 7);
       });
       ev.on('combo:changed', (e) => {
         if (e.tierUp) this.crossPulse = 1;
       });
+      ev.on('explosion', (e) => this._explosion(e));
+      ev.on('fx:link', (e) => this._worldLink(e.from, e.to, e.kind));
+      ev.on('boss:defeated', (e) => this._bossDown(e.boss));
+      ev.on('target:escaped', (e) => {
+        if (e.target.kind !== 'drone') return;
+        const c = ZTA.TargetArt.center(e.target, this.game.camera, this._c);
+        this._label(U.clamp(c.sx, 60, this.game.camera.W - 60), c.sy, 'ESCAPED', 'miss', 0.9);
+      });
+      ev.on('range:changed', () => this.clear());
+      ev.on('challenge:start', () => this.clear());
     }
 
     /* ------------------------------------------------------------- spawners */
@@ -122,7 +142,7 @@
       p.rot = Math.random() * 6;
       p.vr = (Math.random() < 0.5 ? -1 : 1) * (14 + Math.random() * 10);
       const H = this.game.camera.H;
-      p.size = (H / 1080) * (kind === 'shell' ? 1.6 : kind === 'small' ? 0.9 : 1);
+      p.size = (H / 1080) * (kind === 'shell' ? 1.6 : kind === 'small' ? 0.9 : kind === 'rifle' ? 1.15 : 1);
     }
 
     muzzleSmoke(x, y, size) {
@@ -170,6 +190,7 @@
     /* ------------------------------------------------------------- handlers */
 
     _impacts(shot) {
+      this._tracer(shot);
       const many = shot.impacts.length > 2;
       for (const im of shot.impacts) {
         const s = this.game.camera.f / im.z;
@@ -190,6 +211,7 @@
           this._dust(im.x, im.y, s, 2);
         } else {
           const w = im.world;
+          if (w.surface === 'sky') continue;
           this._dust(im.x, im.y, s, many ? 1 : 3);
           this._decal(w, 'hole', 0.022);
         }
@@ -219,10 +241,11 @@
       const y = c.sy;
       const mat = t.def.material;
       if (mat === 'steel') {
-        this._sparks(x, y - t.radius * s, s, 8, 1.2);
-        this._ring(x, y, t.radius * s * 1.3, 'paper');
+        const rad = t.kind === 'plate' ? t.radius : t.kind === 'barrel' ? 0.3 : 0.28;
+        this._sparks(x, y - rad * s, s, 8, 1.2);
+        this._ring(x, y, rad * s * 1.3, 'paper');
       } else if (mat === 'glass') {
-        const h = t.def.shape.h * t.scale * s;
+        const h = (t.def.shape.h || 0.25) * (t.scale || 1) * s;
         for (let i = 0; i < this._count(14); i++) {
           const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.6;
           const v = 160 + Math.random() * 380;
@@ -258,6 +281,111 @@
       if (e.multi > 1) this._label(x, y - s * 0.25 - 26, 'MULTI ×' + e.multi, 'callout', 1);
     }
 
+    /* ------------------------------------------------------ rounds and links */
+
+    _tracer(shot) {
+      if (!this.muzzleAt || shot.projectile) return;
+      const w = ZTA.data.weaponById[shot.weaponId];
+      const kind = w && TRACERS[w.audio];
+      if (!kind) return;
+      const m = this.muzzleAt();
+      if (!m) return;
+      const cam = this.game.camera;
+      let far = null;
+      for (const im of shot.impacts) if (!far || im.z > far.z) far = im;
+      const end = far || { x: shot.aimX, y: shot.aimY };
+      if (kind === 'beam' || kind === 'arc') {
+        this._link(kind, m.x - cam.offX, m.y - cam.offY, end.x - cam.offX, end.y - cam.offY, kind === 'beam' ? 0.32 : 0.16);
+        if (kind === 'beam') this.sceneFlash = Math.max(this.sceneFlash, this.settings.flashes ? 0.16 : 0);
+        return;
+      }
+      const list = shot.impacts.length ? shot.impacts.slice(0, 3) : [end];
+      for (const im of list) this._link(kind, m.x - cam.offX, m.y - cam.offY, im.x - cam.offX, im.y - cam.offY, kind === 'heavy' ? 0.11 : 0.06);
+    }
+
+    _link(type, x0, y0, x1, y1, life) {
+      const l = this.links.spawn();
+      l.type = type;
+      l.x0 = x0;
+      l.y0 = y0;
+      l.x1 = x1;
+      l.y1 = y1;
+      l.age = 0;
+      l.life = life;
+      l.seed = Math.random() * 1000;
+    }
+
+    _worldLink(from, to, kind) {
+      const cam = this.game.camera;
+      const a = cam.project(from.x, from.y, from.z, {});
+      const b = cam.project(to.x, to.y, to.z, {});
+      const type = kind === 'arc' ? 'arc' : kind === 'ricochet' ? 'ricochet' : 'tracer';
+      this._link(type, a.sx - cam.offX, a.sy - cam.offY, b.sx - cam.offX, b.sy - cam.offY, type === 'arc' ? 0.2 : 0.12);
+      if (type === 'ricochet') this._sparks(b.sx, b.sy, b.s, 3, 0.8);
+      if (type === 'arc') this._ring(b.sx, b.sy, b.s * 0.18, 'paper');
+    }
+
+    /* ------------------------------------------------------------- explosions */
+
+    _explosion(e) {
+      const set = this.settings;
+      const s = e.s;
+      const R = e.radius * s;
+      const big = e.kind !== 'grenade';
+      if (set.shake) this.trauma = Math.min(1, this.trauma + (big ? 0.55 : 0.4));
+      if (set.flashes) this.sceneFlash = Math.max(this.sceneFlash, big ? 0.3 : 0.22);
+      this._world('blast', e.sx, e.sy, { g: 0, life: 0.34, size: R * 0.75 });
+      this._world('shock', e.sx, e.sy, { g: 0, life: 0.42, size: R * 1.1 });
+      for (let i = 0; i < this._count(16); i++) {
+        const a = Math.random() * Math.PI * 2;
+        const v = (240 + Math.random() * 520) * U.clamp(s / 90, 0.5, 1.6);
+        this._world('ember', e.sx, e.sy, { vx: Math.cos(a) * v, vy: Math.sin(a) * v - 200, g: 1400, drag: 1.5, life: 0.45 + Math.random() * 0.4, size: 1 });
+      }
+      for (let i = 0; i < this._count(big ? 7 : 5); i++) {
+        this._world('billow', e.sx + (Math.random() - 0.5) * R * 0.7, e.sy - Math.random() * R * 0.3, {
+          vx: (Math.random() - 0.5) * 50,
+          vy: -40 - Math.random() * 70,
+          g: -15,
+          drag: 0.8,
+          life: 1.1 + Math.random() * 0.8,
+          size: R * (0.25 + Math.random() * 0.2),
+        });
+      }
+      if (big) {
+        for (let i = 0; i < this._count(8); i++) {
+          const a = -Math.PI / 2 + (Math.random() - 0.5) * 2.6;
+          const v = 260 + Math.random() * 420;
+          this._world('chunk', e.sx, e.sy, { vx: Math.cos(a) * v, vy: Math.sin(a) * v - 100, g: 1500, life: 0.9, size: Math.max(3, s * (0.04 + Math.random() * 0.05)), vr: (Math.random() - 0.5) * 18 });
+        }
+      }
+      this._decal({ x: e.x, y: 0.002, z: e.z, surface: 'floor' }, 'scorch', e.radius * 0.45);
+    }
+
+    _bossDown(boss) {
+      if (!boss) return;
+      const cam = this.game.camera;
+      const n = 5;
+      for (let i = 0; i < n; i++) {
+        const x = boss.x + (Math.random() - 0.5) * boss.def.body.w;
+        const y = 0.6 + Math.random() * (boss.def.body.h + boss.def.body.base - 0.6);
+        this.pending.push({ at: this.t + 0.12 + i * 0.22, fn: () => {
+          const p = cam.project(x, y, boss.z, {});
+          this._explosion({ x, y, z: boss.z, radius: 1.1 + Math.random() * 0.5, kind: 'boss', sx: p.sx, sy: p.sy, s: p.s });
+        } });
+      }
+      const p = cam.project(boss.x, boss.def.body.base + boss.def.body.h * 0.6, boss.z, {});
+      this.pending.push({ at: this.t + 0.3, fn: () => this._label(p.sx, p.sy - 30, 'BOSS DOWN', 'bonus', 1.8) });
+    }
+
+    clear() {
+      this.particles.clear();
+      this.screen.clear();
+      this.decals.clear();
+      this.labels.clear();
+      this.links.clear();
+      this.pending.length = 0;
+    }
+
     /* --------------------------------------------------------------- update */
 
     update(dt) {
@@ -287,6 +415,17 @@
       this.decals.forEachAlive((d) => {
         d.age += dt;
       });
+      this.links.forEachAlive((l) => {
+        l.age += dt;
+        if (l.age >= l.life) l.alive = false;
+      });
+      if (this.pending.length) {
+        const due = this.pending.filter((q) => q.at <= this.t);
+        if (due.length) {
+          this.pending = this.pending.filter((q) => q.at > this.t);
+          for (const q of due) q.fn();
+        }
+      }
       this.hit.age += dt;
       this.crossPulse = Math.max(0, this.crossPulse - dt * 3);
       this.sceneFlash = Math.max(0, this.sceneFlash - dt * 9);
@@ -303,6 +442,7 @@
     drawDecals(ctx) {
       const cam = this.game.camera;
       const q = this._c;
+      const dark = cam.range.tone === 'paper';
       this.decals.forEachAlive((d) => {
         cam.project(d.x, d.y, d.z, q);
         const r = d.size * q.s;
@@ -316,11 +456,35 @@
         ctx.translate(q.sx, q.sy);
         if (d.surface === 'floor') ctx.scale(1, 0.35);
         ctx.fillStyle = P.ink;
-        if (d.kind === 'hole') {
+        if (d.kind === 'scorch') {
+          ctx.globalAlpha = fade * 0.8;
+          ctx.fillStyle = paint.pattern(ctx, 3, 1.2, dark ? paint.rgba(P.ink, 0.9) : P.ink, 1);
+          ctx.beginPath();
+          const n = 11;
+          for (let k = 0; k <= n; k++) {
+            const a = (k / n) * Math.PI * 2;
+            const rr = r * (0.75 + 0.3 * Math.sin(d.seed + k * 2.3));
+            if (k === 0) ctx.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+            else ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+          }
+          ctx.closePath();
+          ctx.fill();
+          ctx.fillStyle = paint.rgba(P.ink, 0.55);
+          ctx.beginPath();
+          ctx.arc(0, 0, r * 0.45, 0, Math.PI * 2);
+          ctx.fill();
+        } else if (d.kind === 'hole') {
+          if (dark) {
+            ctx.beginPath();
+            ctx.arc(0, 0, Math.max(1.8, r * 1.6), 0, Math.PI * 2);
+            ctx.fillStyle = paint.rgba(P.paper, 0.35);
+            ctx.fill();
+            ctx.fillStyle = P.ink;
+          }
           ctx.beginPath();
           ctx.arc(0, 0, Math.max(1.2, r), 0, Math.PI * 2);
           ctx.fill();
-          ctx.strokeStyle = paint.rgba(P.ink, 0.5);
+          ctx.strokeStyle = dark ? paint.rgba(P.paper, 0.4) : paint.rgba(P.ink, 0.5);
           ctx.lineWidth = 1;
           ctx.beginPath();
           for (let k = 0; k < 3; k++) {
@@ -340,7 +504,7 @@
             else ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
           }
           ctx.closePath();
-          ctx.fillStyle = paint.rgba(P.ink, 0.78);
+          ctx.fillStyle = dark ? paint.rgba(P.paper, 0.4) : paint.rgba(P.ink, 0.78);
           ctx.fill();
           for (let k = 0; k < 5; k++) {
             const a = d.seed * 3 + k * 1.3;
@@ -436,6 +600,80 @@
             ctx.restore();
             break;
           }
+          case 'blast': {
+            // Starburst: grows fast, then collapses.
+            const g = k < 0.25 ? U.easeOutCubic(k / 0.25) : 1 - U.clamp((k - 0.25) / 0.75, 0, 1) * 0.6;
+            const R = p.size * g;
+            ctx.save();
+            ctx.globalAlpha = 1 - U.clamp((k - 0.5) / 0.5, 0, 1);
+            ctx.translate(x, y);
+            ctx.rotate(p.seed * 6);
+            ctx.beginPath();
+            const n = 12;
+            for (let i = 0; i <= n * 2; i++) {
+              const a = (i / (n * 2)) * Math.PI * 2;
+              const rr = i % 2 ? R * (0.45 + 0.1 * Math.sin(p.seed * 50 + i)) : R * (0.85 + 0.25 * Math.sin(p.seed * 30 + i));
+              if (i === 0) ctx.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+              else ctx.lineTo(Math.cos(a) * rr, Math.sin(a) * rr);
+            }
+            ctx.closePath();
+            ctx.fillStyle = P.paperHi;
+            ctx.fill();
+            ctx.lineWidth = Math.max(2, R * 0.06);
+            ctx.strokeStyle = P.ink;
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(0, 0, R * 0.42, 0, Math.PI * 2);
+            ctx.fillStyle = paint.pattern(ctx, 4, 1.4, P.ink, 1);
+            ctx.globalAlpha *= U.clamp(k * 3, 0, 1);
+            ctx.fill();
+            ctx.restore();
+            break;
+          }
+          case 'shock': {
+            const r = p.size * (0.3 + U.easeOutCubic(k) * 1.1);
+            ctx.save();
+            ctx.globalAlpha = (1 - k) * 0.9;
+            ctx.strokeStyle = P.ink;
+            ctx.lineWidth = Math.max(2, 10 * (1 - k));
+            ctx.beginPath();
+            ctx.ellipse(x, y, r, r * 0.8, 0, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.strokeStyle = P.paperHi;
+            ctx.lineWidth = Math.max(1, 4 * (1 - k));
+            ctx.stroke();
+            ctx.restore();
+            break;
+          }
+          case 'ember': {
+            const len = 0.03;
+            ctx.lineCap = 'round';
+            ctx.globalAlpha = 1 - k;
+            ctx.strokeStyle = P.ink;
+            ctx.lineWidth = 3.5;
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x - p.vx * len, y - p.vy * len);
+            ctx.stroke();
+            ctx.strokeStyle = k < 0.4 ? P.paperHi : P.smoke;
+            ctx.lineWidth = 1.6;
+            ctx.stroke();
+            ctx.globalAlpha = 1;
+            break;
+          }
+          case 'billow': {
+            const r = p.size * (0.7 + k * 1.1);
+            ctx.save();
+            ctx.globalAlpha = 0.75 * (1 - k);
+            ctx.fillStyle = paint.pattern(ctx, 4, 1.5, k < 0.2 ? P.graphite : P.ink2, 1);
+            ctx.beginPath();
+            ctx.arc(x, y, r, 0, Math.PI * 2);
+            ctx.arc(x + r * 0.6, y + r * 0.2, r * 0.7, 0, Math.PI * 2);
+            ctx.arc(x - r * 0.55, y + r * 0.25, r * 0.6, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+            break;
+          }
           case 'ring': {
             const r = p.size * (0.4 + U.easeOutCubic(k) * 0.9);
             ctx.save();
@@ -475,6 +713,23 @@
             ctx.stroke();
             ctx.fillStyle = P.paper;
             ctx.fillRect(7, -5, 7, 10);
+          } else if (p.kind === 'rifle') {
+            // Bottlenecked rifle brass.
+            ctx.fillStyle = P.paperDim;
+            ctx.strokeStyle = P.ink;
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(-11, -3.5);
+            ctx.lineTo(5, -3.5);
+            ctx.lineTo(8, -2);
+            ctx.lineTo(12, -2);
+            ctx.lineTo(12, 2);
+            ctx.lineTo(8, 2);
+            ctx.lineTo(5, 3.5);
+            ctx.lineTo(-11, 3.5);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
           } else {
             ctx.fillStyle = P.paperDim;
             ctx.strokeStyle = P.ink;
@@ -516,8 +771,8 @@
         let stroke = P.ink;
         if (l.kind === 'crit') {
           size = base * 1.35;
-        } else if (l.kind === 'armor') {
-          size = base * 0.8;
+        } else if (l.kind === 'armor' || l.kind === 'miss') {
+          size = base * (l.kind === 'miss' ? 0.9 : 0.8);
           fill = P.smoke;
         } else if (l.kind === 'cash') {
           size = base * 1.05;
@@ -549,6 +804,103 @@
         }
         ctx.restore();
       });
+    }
+
+    /** Tracers, beams, arcs and ricochet streaks. */
+    drawLinks(ctx) {
+      const cam = this.game.camera;
+      const ox = cam.offX;
+      const oy = cam.offY;
+      ctx.save();
+      ctx.lineCap = 'round';
+      this.links.forEachAlive((l) => {
+        const k = l.age / l.life;
+        const x0 = l.x0 + ox;
+        const y0 = l.y0 + oy;
+        const x1 = l.x1 + ox;
+        const y1 = l.y1 + oy;
+        if (l.type === 'tracer' || l.type === 'heavy' || l.type === 'needle' || l.type === 'ricochet') {
+          // A short bright dash that travels from start to end.
+          const span = l.type === 'needle' ? 0.12 : l.type === 'heavy' ? 0.5 : 0.28;
+          const t1 = U.clamp(k * 1.6, 0, 1);
+          const t0 = Math.max(0, t1 - span);
+          const ax = x0 + (x1 - x0) * t0;
+          const ay = y0 + (y1 - y0) * t0;
+          const bx = x0 + (x1 - x0) * t1;
+          const by = y0 + (y1 - y0) * t1;
+          const w = l.type === 'heavy' ? 4.5 : l.type === 'needle' ? 2 : 3;
+          ctx.globalAlpha = 1 - k * 0.5;
+          ctx.strokeStyle = P.ink;
+          ctx.lineWidth = w + 2.5;
+          ctx.beginPath();
+          ctx.moveTo(ax, ay);
+          ctx.lineTo(bx, by);
+          ctx.stroke();
+          ctx.strokeStyle = P.paperHi;
+          ctx.lineWidth = w;
+          ctx.stroke();
+        } else if (l.type === 'beam') {
+          const w = 16 * (1 - k) + 2;
+          ctx.globalAlpha = 1 - k;
+          ctx.strokeStyle = P.ink;
+          ctx.lineWidth = w + 6;
+          ctx.beginPath();
+          ctx.moveTo(x0, y0);
+          ctx.lineTo(x1, y1);
+          ctx.stroke();
+          ctx.strokeStyle = P.paperHi;
+          ctx.lineWidth = w;
+          ctx.stroke();
+          // Spiral coil wrapped around the beam.
+          const dx = x1 - x0;
+          const dy = y1 - y0;
+          const len = Math.hypot(dx, dy) || 1;
+          const nx = -dy / len;
+          const ny = dx / len;
+          ctx.strokeStyle = P.ink;
+          ctx.lineWidth = 1.5;
+          ctx.beginPath();
+          const turns = 18;
+          for (let i = 0; i <= 120; i++) {
+            const t = i / 120;
+            const amp = (w * 0.9 + 6) * (1 - t * 0.7);
+            const off = Math.sin(t * turns * Math.PI * 2 + l.seed + k * 20) * amp;
+            const px = x0 + dx * t + nx * off;
+            const py = y0 + dy * t + ny * off;
+            if (i === 0) ctx.moveTo(px, py);
+            else ctx.lineTo(px, py);
+          }
+          ctx.stroke();
+        } else if (l.type === 'arc') {
+          // Jagged lightning, re-rolled every few frames.
+          const dx = x1 - x0;
+          const dy = y1 - y0;
+          const len = Math.hypot(dx, dy) || 1;
+          const nx = -dy / len;
+          const ny = dx / len;
+          const seg = Math.max(6, Math.round(len / 22));
+          const roll = Math.floor(l.age * 40) + l.seed;
+          ctx.globalAlpha = 1 - k * 0.6;
+          for (const [c, w] of [
+            [P.ink, 6],
+            [P.paperHi, 2.4],
+          ]) {
+            ctx.strokeStyle = c;
+            ctx.lineWidth = w;
+            ctx.beginPath();
+            ctx.moveTo(x0, y0);
+            for (let i = 1; i < seg; i++) {
+              const t = i / seg;
+              const j = Math.sin(roll * 12.9898 + i * 78.233) * 43758.5453;
+              const off = (j - Math.floor(j) - 0.5) * Math.min(40, len * 0.18);
+              ctx.lineTo(x0 + dx * t + nx * off, y0 + dy * t + ny * off);
+            }
+            ctx.lineTo(x1, y1);
+            ctx.stroke();
+          }
+        }
+      });
+      ctx.restore();
     }
 
     /** Hit marker around the crosshair: subtle for hits, bolder for crits and kills. */
@@ -594,6 +946,7 @@
         screen: this.screen.countAlive(),
         decals: this.decals.countAlive(),
         labels: this.labels.countAlive(),
+        links: this.links.countAlive(),
         limits: LIMITS,
       };
     }

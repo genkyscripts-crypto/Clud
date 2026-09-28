@@ -39,6 +39,69 @@
       send: 0.42,
       gain: 0.92,
     },
+    magnum: {
+      crack: { f: 2900, q: 0.6, g: 0.65, d: 0.045 },
+      body: { f: 700, q: 0.8, g: 1.05, d: 0.2 },
+      thump: { f0: 120, f1: 40, g: 1.1, d: 0.16 },
+      tail: { f: 420, g: 0.38, d: 0.75 },
+      send: 0.4,
+      gain: 0.9,
+    },
+    rifle: {
+      crack: { f: 4600, q: 0.7, g: 0.62, d: 0.03 },
+      body: { f: 1100, q: 0.9, g: 0.7, d: 0.1 },
+      thump: { f0: 140, f1: 55, g: 0.7, d: 0.09 },
+      tail: { f: 620, g: 0.24, d: 0.5 },
+      send: 0.3,
+      gain: 0.72,
+    },
+    battle: {
+      crack: { f: 3900, q: 0.65, g: 0.66, d: 0.035 },
+      body: { f: 820, q: 0.8, g: 0.9, d: 0.14 },
+      thump: { f0: 125, f1: 45, g: 0.95, d: 0.13 },
+      tail: { f: 480, g: 0.32, d: 0.65 },
+      send: 0.36,
+      gain: 0.8,
+    },
+    marksman: {
+      crack: { f: 5200, q: 0.6, g: 0.8, d: 0.04 },
+      body: { f: 760, q: 0.7, g: 1.05, d: 0.2 },
+      thump: { f0: 105, f1: 32, g: 1.2, d: 0.22 },
+      tail: { f: 380, g: 0.5, d: 1.3 },
+      send: 0.55,
+      gain: 0.95,
+    },
+    lmg: {
+      crack: { f: 4100, q: 0.7, g: 0.55, d: 0.028 },
+      body: { f: 900, q: 0.9, g: 0.75, d: 0.09 },
+      thump: { f0: 130, f1: 52, g: 0.8, d: 0.08 },
+      tail: { f: 520, g: 0.2, d: 0.35 },
+      send: 0.25,
+      gain: 0.66,
+    },
+    minigun: {
+      crack: { f: 4400, q: 0.8, g: 0.4, d: 0.018 },
+      body: { f: 1200, q: 1.0, g: 0.5, d: 0.045 },
+      thump: { f0: 160, f1: 80, g: 0.45, d: 0.04 },
+      tail: { f: 700, g: 0.1, d: 0.16 },
+      send: 0.15,
+      gain: 0.5,
+    },
+    launcher: {
+      crack: { f: 1400, q: 0.5, g: 0.35, d: 0.03 },
+      body: { f: 380, q: 0.7, g: 0.9, d: 0.16 },
+      thump: { f0: 90, f1: 40, g: 1.0, d: 0.14 },
+      tail: { f: 260, g: 0.2, d: 0.4 },
+      send: 0.3,
+      gain: 0.8,
+    },
+  };
+
+  /** Energy weapons are tonal, not noise bursts. */
+  const ENERGY = {
+    arc: { f0: 1800, f1: 220, type: 'sawtooth', g: 0.22, d: 0.16, buzz: 0.35, gain: 0.7 },
+    needle: { f0: 3200, f1: 1400, type: 'square', g: 0.08, d: 0.04, buzz: 0.12, gain: 0.55 },
+    rail: { f0: 2400, f1: 60, type: 'sawtooth', g: 0.3, d: 0.5, buzz: 0.6, gain: 0.95 },
   };
 
   class AudioEngine {
@@ -227,11 +290,14 @@
 
     /* ----------------------------------------------------------- recipes */
 
+    /** opts: { comboTier, pitch } — pitch is the weapon's own voice (bigger calibers sit lower). */
     gunshot(profile, opts) {
       const o = opts || {};
+      if (ENERGY[profile]) return this._energyShot(profile, o);
       const p = GUNS[profile] || GUNS.pistol;
       if (!this._admit('gun', 3, p.tail.d + 0.1)) return;
-      const vary = 1 + (Math.random() - 0.5) * 0.08;
+      const pitch = o.pitch || 1;
+      const vary = (1 + (Math.random() - 0.5) * 0.08) * pitch;
       const gv = p.gain * (1 + (Math.random() - 0.5) * 0.14);
       if (this._sample('gun.' + profile, 0.08, gv)) return;
       const t = this.ctx.currentTime;
@@ -239,9 +305,45 @@
       const out = this._out(0.08, p.send);
       out.gain.value = gv;
       this._noise(out, t, { type: 'highpass', f: p.crack.f * vary * bright, q: p.crack.q, g: p.crack.g, d: p.crack.d });
-      this._noise(out, t, { type: 'bandpass', f: p.body.f * vary, f1: p.body.f * 0.55, q: p.body.q, g: p.body.g, d: p.body.d });
-      this._tone(out, t, { f: p.thump.f0 * vary, f1: p.thump.f1, g: p.thump.g, d: p.thump.d });
-      this._noise(out, t + 0.006, { type: 'lowpass', f: p.tail.f, q: 0.4, g: p.tail.g, d: p.tail.d, a: 0.01 });
+      this._noise(out, t, { type: 'bandpass', f: p.body.f * vary, f1: p.body.f * 0.55 * pitch, q: p.body.q, g: p.body.g, d: p.body.d });
+      this._tone(out, t, { f: p.thump.f0 * vary, f1: p.thump.f1 * pitch, g: p.thump.g, d: p.thump.d });
+      this._noise(out, t + 0.006, { type: 'lowpass', f: p.tail.f * pitch, q: 0.4, g: p.tail.g, d: p.tail.d, a: 0.01 });
+      if (profile === 'marksman') this._noise(out, t + 0.12, { type: 'lowpass', f: 260, q: 0.4, g: 0.16, d: 0.9, a: 0.05 });
+      if (profile === 'launcher') this._noise(out, t, { type: 'bandpass', f: 180, f1: 90, q: 0.6, g: 0.5, d: 0.25 });
+    }
+
+    _energyShot(profile, o) {
+      const p = ENERGY[profile];
+      if (!this._admit('gun', 3, p.d + 0.2)) return;
+      const gv = p.gain * (1 + (Math.random() - 0.5) * 0.12);
+      if (this._sample('gun.' + profile, 0.08, gv)) return;
+      const t = this.ctx.currentTime;
+      const pitch = (o.pitch || 1) * (1 + (Math.random() - 0.5) * 0.06);
+      const out = this._out(0.08, profile === 'rail' ? 0.5 : 0.25);
+      out.gain.value = gv;
+      this._tone(out, t, { type: p.type, f: p.f0 * pitch, f1: p.f1 * pitch, g: p.g, d: p.d });
+      this._tone(out, t, { type: 'sine', f: p.f0 * 0.5 * pitch, f1: p.f1 * 0.5, g: p.g * 0.8, d: p.d * 0.8 });
+      this._noise(out, t, { type: 'highpass', f: 5000, g: p.buzz, d: Math.min(0.08, p.d * 0.5) });
+      if (profile === 'rail') {
+        this._tone(out, t, { f: 55, f1: 30, g: 1.0, d: 0.5 });
+        this._noise(out, t + 0.02, { type: 'lowpass', f: 500, q: 0.4, g: 0.5, d: 1.1, a: 0.02 });
+      }
+      if (profile === 'arc') for (let i = 0; i < 4; i++) this._noise(out, t + i * 0.03, { type: 'bandpass', f: 2500 + Math.random() * 3000, q: 3, g: 0.2, d: 0.02 });
+    }
+
+    /** Explosion: a low boom, a noise body, debris ticks. kind 'barrel' | 'grenade' | 'boss'. */
+    explosion(kind, opts) {
+      const o = opts || {};
+      if (!this._admit('boom', 2, 1.4)) return;
+      if (this._sample('boom.' + kind, o.pan || 0, 0.9)) return;
+      const t = this.ctx.currentTime;
+      const big = kind === 'boss' ? 1.25 : kind === 'barrel' ? 1.1 : 1;
+      const out = this._out(o.pan || 0, 0.5);
+      out.gain.value = 0.95;
+      this._tone(out, t, { f: 90 / big, f1: 28, g: 1.2 * big, d: 0.7 * big });
+      this._noise(out, t, { type: 'lowpass', f: 1400, f1: 180, q: 0.5, g: 1.0, d: 0.9 * big, a: 0.004 });
+      this._noise(out, t, { type: 'highpass', f: 3200, g: 0.35, d: 0.06 });
+      for (let i = 0; i < 6; i++) this._tone(out, t + 0.18 + Math.random() * 0.5, { type: 'triangle', f: 300 + Math.random() * 900, g: 0.05, d: 0.06 });
     }
 
     /** Material impact. kind: 'hit' | 'crit' | 'armor' | 'break'. */
@@ -348,6 +450,79 @@
         case 'switch':
           this._noise(out, t, { type: 'bandpass', f: 600, f1: 1800, q: 0.9, g: 0.14, d: 0.18 });
           this._noise(out, t + 0.14, { type: 'highpass', f: 3000, g: 0.25, d: 0.02 });
+          break;
+        case 'boltUp':
+          this._noise(out, t, { type: 'bandpass', f: 2200 * v, q: 2, g: 0.35, d: 0.03 });
+          this._noise(out, t + 0.06, { type: 'bandpass', f: 1100 * v, f1: 700, q: 1.4, g: 0.4, d: 0.08 });
+          break;
+        case 'boltDown':
+          this._noise(out, t, { type: 'bandpass', f: 1500 * v, f1: 2100, q: 1.4, g: 0.45, d: 0.07 });
+          this._noise(out, t + 0.08, { type: 'bandpass', f: 2800 * v, q: 2, g: 0.4, d: 0.025 });
+          this._tone(out, t + 0.08, { f: 380 * v, g: 0.2, d: 0.04 });
+          break;
+        case 'cylOut':
+          this._noise(out, t, { type: 'bandpass', f: 2400 * v, q: 2.5, g: 0.3, d: 0.03 });
+          this._tone(out, t + 0.03, { type: 'triangle', f: 900 * v, f1: 600, g: 0.12, d: 0.12 });
+          break;
+        case 'cylIn':
+          this._noise(out, t, { type: 'bandpass', f: 1600 * v, q: 1.5, g: 0.5, d: 0.05 });
+          this._tone(out, t, { f: 520 * v, g: 0.24, d: 0.06 });
+          for (let i = 1; i < 4; i++) this._noise(out, t + 0.05 + i * 0.03, { type: 'highpass', f: 4200, g: 0.12, d: 0.01 });
+          break;
+        case 'breakOpen':
+          this._noise(out, t, { type: 'bandpass', f: 1300 * v, q: 1.2, g: 0.45, d: 0.06 });
+          this._tone(out, t, { type: 'triangle', f: 240 * v, g: 0.25, d: 0.08 });
+          break;
+        case 'breakClose':
+          this._noise(out, t, { type: 'bandpass', f: 1900 * v, q: 1.5, g: 0.6, d: 0.05 });
+          this._tone(out, t, { f: 300 * v, g: 0.3, d: 0.06 });
+          break;
+        case 'boxOpen':
+          this._noise(out, t, { type: 'bandpass', f: 1000 * v, q: 1.1, g: 0.4, d: 0.08 });
+          this._noise(out, t + 0.1, { type: 'highpass', f: 3500, g: 0.2, d: 0.2 });
+          break;
+        case 'vent':
+          this._noise(out, t, { type: 'highpass', f: 2600, f1: 5200, g: 0.4, d: 0.5, a: 0.02 });
+          this._tone(out, t, { type: 'sawtooth', f: 900 * v, f1: 120, g: 0.08, d: 0.4 });
+          break;
+        case 'charge':
+          this._tone(out, t, { type: 'sawtooth', f: 180 * v, f1: 1800, g: 0.08, d: 0.45 });
+          this._tone(out, t + 0.42, { f: 2400 * v, g: 0.1, d: 0.08 });
+          break;
+        case 'popup':
+          this._noise(out, t, { type: 'bandpass', f: 900 * v, f1: 1600, q: 1.2, g: 0.3, d: 0.06 });
+          this._tone(out, t + 0.02, { type: 'triangle', f: 420 * v, g: 0.12, d: 0.08 });
+          break;
+        case 'escape':
+          this._tone(out, t, { type: 'triangle', f: 520, f1: 260, g: 0.1, d: 0.25 });
+          break;
+        case 'boss_intro':
+          this._tone(out, t, { type: 'sawtooth', f: 55, g: 0.2, d: 1.2, a: 0.2 });
+          this._tone(out, t + 0.2, { type: 'square', f: 110, f1: 82, g: 0.06, d: 0.9 });
+          this._noise(out, t, { type: 'lowpass', f: 300, g: 0.3, d: 1.2, a: 0.3 });
+          break;
+        case 'boss_enrage':
+          [0, 0.18, 0.36].forEach((d) => this._tone(out, t + d, { type: 'square', f: 880, f1: 660, g: 0.07, d: 0.14 }));
+          break;
+        case 'boss_down':
+          [392, 523.25, 659.25, 783.99, 1046.5].forEach((f, i) => this._tone(out, t + 0.5 + i * 0.09, { type: 'triangle', f, g: 0.16, d: 0.6 }));
+          break;
+        case 'count':
+          this._tone(out, t, { type: 'square', f: 660, g: 0.06, d: 0.1 });
+          break;
+        case 'go':
+          this._tone(out, t, { type: 'square', f: 1320, g: 0.08, d: 0.28 });
+          break;
+        case 'star':
+          this._tone(out, t, { type: 'triangle', f: 880 * (1 + 0.12 * (o.n || 0)), g: 0.18, d: 0.35 });
+          this._noise(out, t, { type: 'highpass', f: 7000, g: 0.06, d: 0.2 });
+          break;
+        case 'fail':
+          this._tone(out, t, { type: 'triangle', f: 330, f1: 220, g: 0.16, d: 0.45 });
+          break;
+        case 'lanes':
+          this._tone(out, t, { type: 'triangle', f: 740, g: 0.1, d: 0.12 });
+          this._tone(out, t + 0.06, { type: 'triangle', f: 988, g: 0.1, d: 0.16 });
           break;
         case 'land':
           this._noise(out, t, { type: 'lowpass', f: 300, g: 0.45, d: 0.12 });

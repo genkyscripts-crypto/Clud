@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Zero to Armory</title>
-<meta name="description" content="A first-person shooting-range incremental game. Break targets, earn cash, upgrade and collect guns.">
+<meta name="description" content="A first-person shooting-range incremental game. Break targets, earn cash, unlock ranges and collect guns.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Stencil+Display:wght@700;800;900&family=Big+Shoulders+Display:wght@600;700;800&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
@@ -16,19 +16,37 @@
 
   <div id="hud" hidden>
     <div class="hud-tl">
-      <div class="cash" id="hud-cash" aria-live="off">$0</div>
+      <div class="purse">
+        <div class="cash" id="hud-cash" aria-live="off">$0</div>
+        <div class="tokens" id="hud-bp" title="Blueprint Tokens"><i class="tk-icon" aria-hidden="true"></i><b id="hud-bp-n">0</b></div>
+      </div>
       <div class="goal" id="hud-goal">
-        <div class="goal-row"><span class="goal-label">Next gun</span><span class="goal-name" id="goal-name"></span><span class="goal-cost" id="goal-cost"></span></div>
+        <div class="goal-row"><span class="goal-label" id="goal-label">Next gun</span><span class="goal-name" id="goal-name"></span><span class="goal-cost" id="goal-cost"></span></div>
         <div class="goal-bar"><i id="goal-fill"></i></div>
       </div>
     </div>
 
     <div class="hud-tc">
-      <div class="wave" id="hud-wave">Wave 01</div>
-      <div class="pips" id="hud-pips"></div>
+      <div class="practice-panel" id="hud-practice">
+        <div class="range-name" id="hud-range">Bench Lane</div>
+        <div class="wave" id="hud-wave">Wave 01</div>
+        <div class="pips" id="hud-pips"></div>
+      </div>
+      <div class="challenge-panel" id="hud-challenge" hidden>
+        <div class="ch-name" id="ch-name"></div>
+        <div class="ch-row">
+          <div class="ch-time" id="ch-time">60.0</div>
+          <div class="ch-score"><b id="ch-value">0</b><span id="ch-metric">breaks</span></div>
+        </div>
+        <div class="ch-stars" id="ch-stars"></div>
+        <div class="ch-lives" id="ch-lives" hidden></div>
+        <button type="button" class="chip quit" id="ch-quit">Quit round</button>
+      </div>
     </div>
 
     <div class="hud-tr">
+      <button class="chip lanes-chip" id="btn-lanes" type="button" hidden><span class="lanes-dot" aria-hidden="true"></span><span id="lanes-amt">$0</span></button>
+      <button class="chip" id="btn-map" type="button"><kbd>M</kbd>Ranges</button>
       <button class="chip" id="btn-armory" type="button"><kbd>Tab</kbd>Armory</button>
       <button class="chip" id="btn-menu" type="button"><kbd>Esc</kbd>Menu</button>
     </div>
@@ -51,6 +69,7 @@
       <div class="reload-bar"><i id="reload-fill"></i></div>
     </div>
 
+    <div class="countdown" id="countdown" hidden aria-live="assertive"></div>
     <div class="toasts" id="toasts" aria-live="polite"></div>
 
     <div class="touch" id="touch-controls" hidden>
@@ -62,9 +81,9 @@
   <!-- Title -->
   <section class="overlay title-screen" id="title" aria-labelledby="title-heading">
     <div class="title-inner">
-      <p class="eyebrow">Bench Lane 01 · Practice range</p>
+      <p class="eyebrow" id="title-eyebrow">Bench Lane 01 · Practice range</p>
       <h1 id="title-heading" class="title-mark"><span>Zero</span><span class="to">to</span><span>Armory</span></h1>
-      <p class="lede">Start with a cheap pistol. Break targets, earn cash, and fill the wall with guns that each shoot differently.</p>
+      <p class="lede">Start with a cheap pistol. Break targets, earn cash, unlock five ranges and fill the wall with forty guns that each shoot differently.</p>
       <div class="title-actions">
         <button class="btn primary" id="btn-start" type="button">Start shooting</button>
         <p class="save-line" id="save-line"></p>
@@ -73,7 +92,8 @@
         <li><kbd>Hold LMB</kbd> Fire</li>
         <li><kbd>R</kbd> Reload early</li>
         <li><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> / wheel Switch gun</li>
-        <li><kbd>Tab</kbd> Armory &amp; upgrades</li>
+        <li><kbd>Tab</kbd> Armory</li>
+        <li><kbd>M</kbd> Ranges &amp; challenges</li>
         <li><kbd>Esc</kbd> Pause</li>
       </ul>
     </div>
@@ -85,7 +105,9 @@
       <h2 id="pause-heading" class="panel-title">Paused</h2>
       <div class="stack">
         <button class="btn primary" type="button" data-action="resume">Resume</button>
+        <button class="btn" type="button" data-action="map">Ranges &amp; challenges</button>
         <button class="btn" type="button" data-action="armory">Armory</button>
+        <button class="btn branch-btn" type="button" data-action="branch" id="pause-branch" hidden>Open a new branch</button>
         <button class="btn" type="button" data-action="settings">Settings</button>
       </div>
       <dl class="statlist" id="pause-stats"></dl>
@@ -102,6 +124,7 @@
         <label class="toggle"><input type="checkbox" id="set-damageNumbers"><span>Damage numbers</span></label>
         <label class="toggle"><input type="checkbox" id="set-hitMarkers"><span>Hit markers</span></label>
         <label class="toggle"><input type="checkbox" id="set-intenseFx"><span>Intense effects</span></label>
+        <label class="toggle"><input type="checkbox" id="set-grain"><span>Film grain</span></label>
         <label class="toggle"><input type="checkbox" id="set-muted"><span>Mute audio</span></label>
         <label class="slider"><span>Volume</span><input type="range" id="set-volume" min="0" max="100" step="1"></label>
       </div>
@@ -118,26 +141,74 @@
     <header class="armory-head">
       <h2 id="armory-heading" class="armory-title">Armory</h2>
       <div class="tabs" role="tablist">
-        <button type="button" role="tab" class="tab" id="tab-weapons" data-tab="weapons" aria-selected="true">Weapons</button>
-        <button type="button" role="tab" class="tab" id="tab-range" data-tab="range" aria-selected="false">Range</button>
+        <button type="button" role="tab" class="tab" data-tab="weapons" aria-selected="true">Weapons</button>
+        <button type="button" role="tab" class="tab" data-tab="range" aria-selected="false">Range</button>
+        <button type="button" role="tab" class="tab" data-tab="workshop" aria-selected="false">Workshop</button>
+        <button type="button" role="tab" class="tab" data-tab="lanes" aria-selected="false">Lanes</button>
       </div>
-      <div class="armory-cash" id="armory-cash">$0</div>
+      <div class="armory-purse"><span class="armory-cash" id="armory-cash">$0</span><span class="tokens" id="armory-bp"><i class="tk-icon" aria-hidden="true"></i><b>0</b></span></div>
       <button type="button" class="chip close" data-action="close"><kbd>Tab</kbd>Back to range</button>
     </header>
     <div class="armory-body" id="armory-body"></div>
   </section>
 
+  <!-- Ranges and challenges -->
+  <section class="overlay map" id="map" hidden aria-labelledby="map-heading">
+    <header class="armory-head">
+      <h2 id="map-heading" class="armory-title">Ranges</h2>
+      <p class="map-sub" id="map-sub"></p>
+      <div class="armory-purse"><span class="armory-cash" id="map-cash">$0</span><span class="tokens" id="map-bp"><i class="tk-icon" aria-hidden="true"></i><b>0</b></span></div>
+      <button type="button" class="chip close" data-action="close"><kbd>M</kbd>Back to range</button>
+    </header>
+    <div class="map-body" id="map-body"></div>
+  </section>
+
+  <!-- Challenge results -->
+  <section class="overlay dim" id="results" hidden aria-labelledby="results-heading">
+    <div class="panel results-panel">
+      <p class="eyebrow" id="results-eyebrow"></p>
+      <h2 id="results-heading" class="panel-title"></h2>
+      <div class="results-stars" id="results-stars"></div>
+      <div class="results-value" id="results-value"></div>
+      <div class="results-rewards" id="results-rewards"></div>
+      <dl class="statlist" id="results-stats"></dl>
+      <div class="stack row">
+        <button class="btn primary" type="button" data-action="retry">Retry</button>
+        <button class="btn" type="button" data-action="map">Challenges</button>
+        <button class="btn" type="button" data-action="practice">Back to practice</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Prestige -->
+  <section class="overlay dim" id="branch" hidden aria-labelledby="branch-heading">
+    <div class="panel wide branch-panel" id="branch-body"></div>
+  </section>
+
+  <!-- Offline earnings -->
+  <section class="overlay dim" id="offline" hidden aria-labelledby="offline-heading">
+    <div class="panel narrow">
+      <p class="eyebrow">Training lanes</p>
+      <h2 id="offline-heading" class="panel-title">While you were away</h2>
+      <p class="offline-amt" id="offline-amt"></p>
+      <p class="note" id="offline-note"></p>
+      <div class="stack">
+        <button class="btn accent" type="button" data-action="collect">Collect</button>
+      </div>
+    </div>
+  </section>
+
   <!-- Unlock reveal -->
   <section class="overlay reveal" id="reveal" hidden aria-labelledby="reveal-name">
     <div class="reveal-inner">
-      <p class="eyebrow accent">New in the armory</p>
+      <p class="eyebrow accent" id="reveal-eyebrow">New in the armory</p>
       <canvas id="reveal-canvas" width="720" height="300" aria-hidden="true"></canvas>
       <p class="reveal-maker" id="reveal-maker"></p>
       <h2 class="reveal-name" id="reveal-name"></h2>
       <p class="reveal-perk" id="reveal-perk"></p>
       <div class="reveal-actions">
         <button type="button" class="btn accent" data-action="test">Test gun</button>
-        <button type="button" class="btn" data-action="back">Back to armory</button>
+        <button type="button" class="btn" data-action="back">Back</button>
       </div>
     </div>
   </section>
@@ -146,11 +217,13 @@
 <script src="js/core/namespace.js"></script>
 <script src="js/core/numbers.js"></script>
 <script src="js/core/pool.js"></script>
-<script src="js/data/range.js"></script>
+<script src="js/data/ranges.js"></script>
 <script src="js/data/targets.js"></script>
 <script src="js/data/weapons.js"></script>
 <script src="js/data/upgrades.js"></script>
-<script src="js/data/waves.js"></script>
+<script src="js/data/challenges.js"></script>
+<script src="js/data/bosses.js"></script>
+<script src="js/data/meta.js"></script>
 <script src="js/systems/perks.js"></script>
 <script src="js/systems/content.js"></script>
 <script src="js/systems/save.js"></script>
@@ -163,8 +236,10 @@
 <script src="js/game/weapons.js"></script>
 <script src="js/game/ballistics.js"></script>
 <script src="js/game/director.js"></script>
+<script src="js/game/challenge.js"></script>
 <script src="js/game/game.js"></script>
 <script src="js/render/palette.js"></script>
+<script src="js/render/themes.js"></script>
 <script src="js/render/background.js"></script>
 <script src="js/render/gunart.js"></script>
 <script src="js/render/targetart.js"></script>
@@ -173,6 +248,7 @@
 <script src="js/render/renderer.js"></script>
 <script src="js/ui/hud.js"></script>
 <script src="js/ui/armory.js"></script>
+<script src="js/ui/map.js"></script>
 <script src="js/ui/menus.js"></script>
 <script src="js/main.js"></script>
 </body>

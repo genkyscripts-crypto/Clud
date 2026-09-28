@@ -30,6 +30,7 @@
       const a = Math.max(1, Math.round(amount));
       this.save.cash += a;
       this.save.lifetimeCash += a;
+      this.save.branchCash = (this.save.branchCash || 0) + a;
       this.events.emit('cash:changed', { cash: this.save.cash, delta: a, source: source || 'unknown', meta: meta || null });
       return a;
     }
@@ -50,6 +51,7 @@
     earnBlueprints(amount, source) {
       if (!Number.isInteger(amount) || amount <= 0) return 0;
       this.save.blueprints += amount;
+      this.save.lifetimeBlueprints = (this.save.lifetimeBlueprints || 0) + amount;
       this.events.emit('blueprints:changed', { blueprints: this.save.blueprints, delta: amount, source: source || '' });
       return amount;
     }

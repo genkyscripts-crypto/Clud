@@ -17,7 +17,7 @@
     missPenalty: 2,
     graceTime: 2.5,
     drainPerSecond: 2,
-    tiers: [5, 10, 15],
+    tiers: [5, 10, 15, 20],
   };
 
   class Combo {
@@ -26,6 +26,14 @@
       this.cfg = CONFIG;
       this.steps = 0;
       this.sinceHit = 0;
+      this.extraSteps = 0;
+    }
+    /** Cap in steps: ×2.5 by default, raised by the Showman charter. */
+    get maxSteps() {
+      return this.cfg.maxSteps + this.extraSteps;
+    }
+    get atCap() {
+      return this.whole >= this.maxSteps;
     }
     get whole() {
       return Math.floor(this.steps + 1e-9);
@@ -47,7 +55,7 @@
       const pw = this.whole;
       const pt = this.tier;
       const gain = (anyWeak ? this.cfg.weakSteps : 1) * (gainMult || 1);
-      this.steps = Math.min(this.cfg.maxSteps, this.steps + gain);
+      this.steps = Math.min(this.maxSteps, this.steps + gain);
       this.sinceHit = 0;
       this._emit(pw, pt, 'hit');
     }
@@ -67,9 +75,15 @@
       this.steps = Math.max(0, this.steps - this.cfg.drainPerSecond * dt);
       this._emit(pw, pt, 'drain');
     }
-    /** Called at the start of a wave so the grace timer restarts after downtime. */
-    touch() {
+    /** Called at the start of a wave or round: restarts the grace timer and applies any head start. */
+    touch(minSteps) {
       this.sinceHit = 0;
+      if (minSteps > this.steps) {
+        const pw = this.whole;
+        const pt = this.tier;
+        this.steps = Math.min(this.maxSteps, minSteps);
+        this._emit(pw, pt, 'start');
+      }
     }
     reset() {
       const pw = this.whole;

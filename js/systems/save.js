@@ -15,22 +15,14 @@
   const D = ZTA.data;
   const U = ZTA.util;
 
-  const VERSION = 1;
+  const VERSION = 2;
   const KEY = 'zta.save';
   const BACKUP_KEY = 'zta.save.bak';
   const FUTURE_KEY = 'zta.save.future';
   const FORMAT = 'zta-save';
 
   function defaultSettings() {
-    return {
-      shake: true,
-      flashes: true,
-      damageNumbers: true,
-      hitMarkers: true,
-      intenseFx: true,
-      volume: 0.7,
-      muted: false,
-    };
+    return { shake: true, flashes: true, damageNumbers: true, hitMarkers: true, intenseFx: true, grain: true, volume: 0.7, muted: false };
   }
 
   function createDefault(now) {
@@ -41,25 +33,48 @@
       savedAt: t,
       cash: 0,
       lifetimeCash: 0,
+      branchCash: 0,
       blueprints: 0,
+      lifetimeBlueprints: 0,
       owned: [D.STARTER_WEAPON],
       equipped: [D.STARTER_WEAPON, null, null],
       activeSlot: 0,
       weaponLevels: {},
       rangeLevels: {},
+      rangeId: D.START_RANGE,
+      rangesUnlocked: [D.START_RANGE],
+      challenges: {},
+      mastery: {},
+      workshop: {},
+      lanes: { unlocked: 0, guns: [null, null, null, null, null], stored: 0, lastTick: t },
+      prestige: { branch: 0, charters: [] },
+      milestones: {},
       favorites: [],
       settings: defaultSettings(),
-      stats: { shots: 0, hits: 0, weakHits: 0, breaks: 0, wavesCleared: 0, playTime: 0, bestCombo: 1 },
+      stats: { shots: 0, hits: 0, weakHits: 0, breaks: 0, wavesCleared: 0, playTime: 0, bestCombo: 1, bossKills: 0, challengeRuns: 0 },
       perGun: {},
-      flags: { hints: {}, seenTargets: {} },
+      flags: { hints: {}, seenTargets: {}, rangeIntro: {} },
     };
   }
 
   /** Migrations keyed by the version they upgrade *from*. */
   const migrations = {
     0(d) {
-      // Pre-release saves had no version field; the layout matches v1.
       d.version = 1;
+      return d;
+    },
+    1(d) {
+      // v2 adds ranges, challenges, mastery, workshop, lanes and prestige.
+      // Mastery starts from the breaks already made with each gun.
+      d.mastery = {};
+      if (d.perGun && typeof d.perGun === 'object') {
+        for (const id of Object.keys(d.perGun)) {
+          const g = d.perGun[id];
+          if (g && U.isFiniteNumber(g.breaks)) d.mastery[id] = { xp: Math.floor(g.breaks) };
+        }
+      }
+      d.branchCash = d.lifetimeCash || 0;
+      d.version = 2;
       return d;
     },
   };
@@ -77,13 +92,15 @@
   }
 
   const nonNeg = (v, fallback) => (U.isFiniteNumber(v) && v >= 0 ? v : fallback);
+  const int = (v, fallback, max) => (Number.isInteger(v) && v >= 0 ? Math.min(v, max == null ? v : max) : fallback);
   const bool = (v, fallback) => (typeof v === 'boolean' ? v : fallback);
+  const obj = (v) => (v && typeof v === 'object' && !Array.isArray(v) ? v : {});
 
   function cleanLevels(src, tracks) {
     const out = {};
-    if (!src || typeof src !== 'object') return out;
+    const s = obj(src);
     for (const t of tracks) {
-      const v = src[t.id];
+      const v = s[t.id];
       if (Number.isInteger(v) && v > 0) out[t.id] = Math.min(v, t.max);
     }
     return out;
@@ -91,8 +108,8 @@
 
   function cleanFlags(src) {
     const out = {};
-    if (!src || typeof src !== 'object') return out;
-    for (const k of Object.keys(src)) if (src[k] === true) out[k] = true;
+    const s = obj(src);
+    for (const k of Object.keys(s)) if (s[k] === true) out[k] = true;
     return out;
   }
 
@@ -105,7 +122,9 @@
     d.savedAt = nonNeg(raw.savedAt, d.savedAt);
     d.cash = nonNeg(raw.cash, 0);
     d.lifetimeCash = Math.max(nonNeg(raw.lifetimeCash, 0), d.cash);
+    d.branchCash = Math.min(Math.max(nonNeg(raw.branchCash, 0), d.cash), d.lifetimeCash);
     d.blueprints = Math.floor(nonNeg(raw.blueprints, 0));
+    d.lifetimeBlueprints = Math.max(Math.floor(nonNeg(raw.lifetimeBlueprints, 0)), d.blueprints);
 
     const owned = new Set([D.STARTER_WEAPON]);
     if (Array.isArray(raw.owned)) for (const id of raw.owned) if (typeof id === 'string' && D.weaponById[id]) owned.add(id);
@@ -128,42 +147,92 @@
     if (slot < 0 || slot > 2 || !eq[slot]) slot = eq.findIndex(Boolean);
     d.activeSlot = slot;
 
-    if (raw.weaponLevels && typeof raw.weaponLevels === 'object') {
-      for (const w of D.weapons) {
-        const lv = cleanLevels(raw.weaponLevels[w.id], w.upgrades);
-        if (Object.keys(lv).length) d.weaponLevels[w.id] = lv;
-      }
+    const wl = obj(raw.weaponLevels);
+    for (const w of D.weapons) {
+      const lv = cleanLevels(wl[w.id], w.upgrades);
+      if (Object.keys(lv).length) d.weaponLevels[w.id] = lv;
     }
     d.rangeLevels = cleanLevels(raw.rangeLevels, D.rangeUpgrades);
 
-    if (Array.isArray(raw.favorites)) d.favorites = raw.favorites.filter((id) => typeof id === 'string' && D.weaponById[id]);
+    const unlocked = new Set([D.START_RANGE]);
+    if (Array.isArray(raw.rangesUnlocked)) for (const id of raw.rangesUnlocked) if (D.rangeById[id]) unlocked.add(id);
+    d.rangesUnlocked = D.ranges.filter((r) => unlocked.has(r.id)).map((r) => r.id);
+    d.rangeId = typeof raw.rangeId === 'string' && unlocked.has(raw.rangeId) ? raw.rangeId : D.START_RANGE;
 
-    const s = raw.settings || {};
+    const ch = obj(raw.challenges);
+    for (const c of D.challenges) {
+      const e = obj(ch[c.id]);
+      const stars = int(e.stars, 0, 3);
+      const best = U.isFiniteNumber(e.best) && e.best >= 0 ? e.best : null;
+      const clears = int(e.clears, 0);
+      const modStars = cleanFlags(e.modStars);
+      for (const k of Object.keys(modStars)) if (!D.meta.modifiers.some((m) => m.id === k)) delete modStars[k];
+      if (stars || best != null || clears || Object.keys(modStars).length) d.challenges[c.id] = { stars, best, clears, modStars };
+    }
+
+    const ms = obj(raw.mastery);
+    const finishIds = new Set(D.meta.finishes.map((f) => f.id));
+    for (const w of D.weapons) {
+      const e = obj(ms[w.id]);
+      const m = {
+        xp: Math.floor(nonNeg(e.xp, 0)),
+        claimed: int(e.claimed, 0, D.meta.mastery.levels.length),
+        obj: Math.floor(nonNeg(e.obj, 0)),
+        objDone: e.objDone === true,
+        finish: typeof e.finish === 'string' && finishIds.has(e.finish) ? e.finish : 'fin.factory',
+        perkBought: int(e.perkBought, 0, D.meta.perkUpgrade.costs.length),
+      };
+      if (m.xp || m.claimed || m.obj || m.objDone || m.finish !== 'fin.factory' || m.perkBought) d.mastery[w.id] = m;
+    }
+
+    const wsRaw = obj(raw.workshop);
+    for (const n of D.meta.workshop) {
+      const v = int(wsRaw[n.id], 0, n.max);
+      if (v) d.workshop[n.id] = v;
+    }
+
+    const ln = obj(raw.lanes);
+    d.lanes.unlocked = int(ln.unlocked, 0, D.meta.lanes.unlockCosts.length);
+    const laneGuns = Array.isArray(ln.guns) ? ln.guns : [];
+    const laneUsed = new Set();
+    for (let i = 0; i < 5; i++) {
+      const id = laneGuns[i];
+      if (typeof id === 'string' && owned.has(id) && !laneUsed.has(id)) {
+        d.lanes.guns[i] = id;
+        laneUsed.add(id);
+      }
+    }
+    d.lanes.stored = nonNeg(ln.stored, 0);
+    d.lanes.lastTick = nonNeg(ln.lastTick, d.lanes.lastTick);
+
+    const pr = obj(raw.prestige);
+    d.prestige.branch = int(pr.branch, 0, 1000);
+    if (Array.isArray(pr.charters)) d.prestige.charters = pr.charters.filter((id) => D.meta.prestige.charters.some((c) => c.id === id));
+
+    const mst = obj(raw.milestones);
+    for (const m of D.meta.milestones) if (mst[m.id] === true) d.milestones[m.id] = true;
+
+    if (Array.isArray(raw.favorites)) d.favorites = Array.from(new Set(raw.favorites.filter((id) => typeof id === 'string' && D.weaponById[id])));
+
+    const s = obj(raw.settings);
     const ds = d.settings;
-    ds.shake = bool(s.shake, ds.shake);
-    ds.flashes = bool(s.flashes, ds.flashes);
-    ds.damageNumbers = bool(s.damageNumbers, ds.damageNumbers);
-    ds.hitMarkers = bool(s.hitMarkers, ds.hitMarkers);
-    ds.intenseFx = bool(s.intenseFx, ds.intenseFx);
-    ds.muted = bool(s.muted, ds.muted);
+    for (const k of ['shake', 'flashes', 'damageNumbers', 'hitMarkers', 'intenseFx', 'grain', 'muted']) ds[k] = bool(s[k], ds[k]);
     ds.volume = U.isFiniteNumber(s.volume) ? U.clamp(s.volume, 0, 1) : ds.volume;
 
-    const st = raw.stats || {};
+    const st = obj(raw.stats);
     for (const k of Object.keys(d.stats)) d.stats[k] = nonNeg(st[k], d.stats[k]);
     d.stats.bestCombo = Math.max(1, d.stats.bestCombo);
 
-    if (raw.perGun && typeof raw.perGun === 'object') {
-      for (const w of D.weapons) {
-        const g = raw.perGun[w.id];
-        if (g && typeof g === 'object') {
-          d.perGun[w.id] = { shots: nonNeg(g.shots, 0), hits: nonNeg(g.hits, 0), breaks: nonNeg(g.breaks, 0) };
-        }
-      }
+    const pg = obj(raw.perGun);
+    for (const w of D.weapons) {
+      const g = pg[w.id];
+      if (g && typeof g === 'object') d.perGun[w.id] = { shots: nonNeg(g.shots, 0), hits: nonNeg(g.hits, 0), breaks: nonNeg(g.breaks, 0) };
     }
 
-    const f = raw.flags || {};
+    const f = obj(raw.flags);
     d.flags.hints = cleanFlags(f.hints);
     d.flags.seenTargets = cleanFlags(f.seenTargets);
+    d.flags.rangeIntro = cleanFlags(f.rangeIntro);
     return d;
   }
 
@@ -206,11 +275,10 @@
   function load(storage, now) {
     const store = storage === undefined ? defaultStorage() : storage;
     const warnings = [];
-    const attempts = [
+    for (const [source, key] of [
       ['main', KEY],
       ['backup', BACKUP_KEY],
-    ];
-    for (const [source, key] of attempts) {
+    ]) {
       const raw = readRaw(store, key);
       if (raw == null) continue;
       try {
@@ -269,18 +337,5 @@
     }
   }
 
-  ZTA.SaveSystem = {
-    VERSION,
-    KEY,
-    BACKUP_KEY,
-    createDefault,
-    defaultSettings,
-    migrate,
-    sanitize,
-    serialize,
-    deserialize,
-    load,
-    save,
-    wipe,
-  };
+  ZTA.SaveSystem = { VERSION, KEY, BACKUP_KEY, createDefault, defaultSettings, migrate, sanitize, serialize, deserialize, load, save, wipe };
 })(typeof window !== 'undefined' ? window : globalThis);

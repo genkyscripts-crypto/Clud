@@ -10,11 +10,74 @@
   const U = ZTA.util;
   const P = ZTA.palette;
 
-  const SPRINGS = {
-    pistol: { k: 380, c: 26, scale: 1.45, x: 0.74, y: 0.95 },
-    smg: { k: 700, c: 36, scale: 1.3, x: 0.75, y: 0.93 },
-    shotgun: { k: 260, c: 21, scale: 1.2, x: 0.8, y: 0.9 },
+  /** Spring stiffness / damping and screen anchor per builder. */
+  const POSES = {
+    pistol: { k: 380, c: 26, x: 0.74, y: 0.95 },
+    revolver: { k: 300, c: 22, x: 0.74, y: 0.95 },
+    smg: { k: 700, c: 36, x: 0.75, y: 0.94 },
+    rifle: { k: 520, c: 30, x: 0.76, y: 0.98, long: true },
+    shotgun: { k: 260, c: 21, x: 0.79, y: 0.96, long: true },
+    marksman: { k: 220, c: 18, x: 0.77, y: 0.98, long: true },
+    lmg: { k: 600, c: 34, x: 0.78, y: 0.98, long: true },
+    minigun: { k: 900, c: 44, x: 0.78, y: 0.94, long: true },
+    launcher: { k: 200, c: 18, x: 0.78, y: 0.96, long: true },
+    arc: { k: 420, c: 26, x: 0.77, y: 0.97, long: true },
+    needle: { k: 800, c: 40, x: 0.77, y: 0.97, long: true },
+    rail: { k: 180, c: 16, x: 0.77, y: 0.97, long: true },
   };
+
+  /** How a gun cycles, what it ejects and what its muzzle does. */
+  function mechFor(def) {
+    const b = def.model.builder;
+    const pr = def.model.params || {};
+    const m = { casing: null, cycle: 'none', flash: 'star', flashSize: 1, flashLife: 0.05, spin: false, energy: false, cylinder: false, charge: false };
+    switch (b) {
+      case 'pistol':
+        Object.assign(m, { casing: 'pistol', cycle: 'slide', flash: pr.comp ? 'comp' : 'star', flashSize: pr.heavy ? 1.4 : 1 });
+        break;
+      case 'revolver':
+        Object.assign(m, { cycle: 'cylinder', cylinder: true, flashSize: pr.shotgun ? 1.6 : 1.3, flashLife: 0.06 });
+        break;
+      case 'smg':
+        Object.assign(m, { casing: 'small', cycle: 'bolt', flashSize: 0.8, flashLife: 0.035 });
+        break;
+      case 'rifle':
+        Object.assign(m, { casing: 'rifle', cycle: 'bolt', flashSize: 1.15, flashLife: 0.045 });
+        break;
+      case 'shotgun':
+        Object.assign(m, { casing: pr.style === 'double' ? null : 'shell', cycle: pr.style === 'pump' ? 'pump' : pr.style === 'double' ? 'none' : 'bolt', flashSize: 1.8, flashLife: 0.075 });
+        break;
+      case 'marksman':
+        Object.assign(m, {
+          casing: 'rifle',
+          cycle: pr.style === 'bolt' || pr.style === 'antimat' ? 'boltAction' : 'bolt',
+          flash: pr.brake ? 'brake' : 'star',
+          flashSize: pr.style === 'antimat' ? 2.1 : 1.5,
+          flashLife: 0.07,
+        });
+        break;
+      case 'lmg':
+        Object.assign(m, { casing: 'rifle', cycle: 'bolt', flashSize: 1.25, flashLife: 0.045 });
+        break;
+      case 'minigun':
+        Object.assign(m, { casing: 'rifle', spin: true, flashSize: 1.1, flashLife: 0.03 });
+        break;
+      case 'launcher':
+        Object.assign(m, { cycle: 'cylinder', cylinder: !!pr.drum, flash: 'puff', flashSize: 2, flashLife: 0.09 });
+        break;
+      case 'arc':
+        Object.assign(m, { energy: true, flash: 'arc', flashSize: 1.3, flashLife: 0.08 });
+        break;
+      case 'needle':
+        Object.assign(m, { energy: true, spin: true, flash: 'energy', flashSize: 0.8, flashLife: 0.035 });
+        break;
+      case 'rail':
+        Object.assign(m, { energy: true, charge: true, flash: 'rail', flashSize: 2.2, flashLife: 0.12 });
+        break;
+      default:
+    }
+    return m;
+  }
 
   /** Tiny 2D affine matrix for mapping model anchors to screen space. */
   class Affine {
@@ -74,11 +137,18 @@
       this.sinceShot = 9;
       this.pumpT = 9;
       this.pumpQueued = false;
+      this.boltT = 9;
+      this.boltQueued = false;
       this.slideLocked = false;
+      this.cyl = 0;
+      this.cylTarget = 0;
+      this.spin = 0;
+      this.spinVel = 0;
+      this.glow = 0;
       this.swayX = 0;
       this.swayY = 0;
       this.t = 0;
-      this.flash = { age: 9, life: 0.05, size: 1, seed: 0 };
+      this.flash = { age: 9, life: 0.05, size: 1, seed: 0, kind: 'star' };
       this.reload = null;
       this.tilt = 0;
       this.tiltStyle = 'magazine';
@@ -86,7 +156,9 @@
       this.affine = new Affine();
       this.muzzle = { x: 0, y: 0 };
       this.eject = { x: 0, y: 0 };
+      this.finish = null;
       this.setWeapon(game.weapons.activeId);
+      fx.muzzleAt = () => this.muzzle;
 
       const ev = game.events;
       ev.on('weapon:fired', (e) => this._onFired(e));
@@ -97,11 +169,15 @@
       });
       ev.on('weapon:reloadEnd', () => this._onReloadEnd());
       ev.on('weapon:reloadCancel', () => {
+        if (this.reload && this.reload.style === 'vent') this.glow = Math.max(this.glow, 0.3);
         this.reload = null;
       });
       ev.on('weapon:switched', (e) => {
         this.setWeapon(e.weaponId);
         this.audio.play('switch');
+      });
+      ev.on('finish:changed', (e) => {
+        if (e.weaponId === this.weaponId) this.finish = e.finish;
       });
     }
 
@@ -109,48 +185,77 @@
       this.weaponId = id;
       this.def = ZTA.data.weaponById[id];
       this.model = ZTA.GunArt.modelFor(this.def);
-      this.spring = SPRINGS[this.def.model.builder] || SPRINGS.pistol;
+      this.builder = this.def.model.builder;
+      this.pose = POSES[this.builder] || POSES.pistol;
+      this.mech = mechFor(this.def);
       this.rec = 0;
       this.recVel = 0;
       this.reload = null;
       this.pumpT = 9;
       this.pumpQueued = false;
+      this.boltT = 9;
+      this.boltQueued = false;
+      this.spinVel = 0;
+      this.glow = this.mech.energy ? 1 : 0;
+      this.sinceShot = 9;
       this.slideLocked = this.game.weapons.runtime(id).ammo <= 0;
+      const prog = this.game.progression;
+      this.finish = prog && prog.finishOf ? prog.finishOf(id) : null;
     }
 
     _onFired(e) {
       const st = e.stats;
+      const m = this.mech;
       this.recVel += 34 * st.recoil.gunKick;
       this.sinceShot = 0;
-      const fam = this.def.model.builder;
-      this.flash.age = 0;
-      this.flash.life = fam === 'shotgun' ? 0.075 : fam === 'smg' ? 0.035 : 0.05;
-      this.flash.size = fam === 'shotgun' ? 1.8 : fam === 'smg' ? 0.8 : 1;
-      this.flash.seed = Math.random() * 1000;
-      if (fam === 'shotgun') {
-        this.pumpT = 0;
-        this.pumpQueued = true;
-      } else {
-        this._ejectCasing(fam === 'smg' ? 'small' : 'pistol');
+      const f = this.flash;
+      f.age = 0;
+      f.life = m.flashLife;
+      f.size = m.flashSize;
+      f.kind = m.flash;
+      f.seed = Math.random() * 1000;
+      switch (m.cycle) {
+        case 'pump':
+          this.pumpT = 0;
+          this.pumpQueued = true;
+          break;
+        case 'boltAction':
+          if (e.ammo > 0) {
+            this.boltT = 0;
+            this.boltQueued = true;
+          } else this._ejectCasing(m.casing);
+          break;
+        case 'cylinder':
+          this.cylTarget += 0.25;
+          break;
+        default:
+          if (m.casing) this._ejectCasing(m.casing);
       }
-      if (fam === 'pistol' && e.ammo <= 0) this.slideLocked = true;
-      this.fx.muzzleSmoke(this.muzzle.x, this.muzzle.y, this.flash.size);
+      if (m.spin) this.spinVel = Math.max(this.spinVel, this.builder === 'minigun' ? 1400 : 900);
+      if (m.energy) this.glow = m.charge ? 0 : 1;
+      if (this.builder === 'pistol' && e.ammo <= 0) this.slideLocked = true;
+      this.fx.muzzleSmoke(this.muzzle.x, this.muzzle.y, m.flash === 'puff' ? 2.2 : m.energy ? 0.4 : f.size);
+      if (m.charge) this.fx.muzzleSmoke(this.eject.x, this.eject.y, 1.2);
     }
 
     _ejectCasing(kind) {
-      this.fx.casing(this.eject.x, this.eject.y, 140 + Math.random() * 90, -(260 + Math.random() * 120), kind);
+      if (!kind) return;
+      const big = kind === 'shell' || kind === 'rifle';
+      this.fx.casing(this.eject.x, this.eject.y, (big ? 170 : 140) + Math.random() * 90, -(260 + Math.random() * 120), kind);
     }
 
     _onReloadStart(e) {
-      this.reload = { style: e.style, duration: e.duration, t: 0, magOut: false, magIn: false, racked: false, emptyStart: this.game.weapons.active.ammo <= 0 };
+      this.reload = { style: e.style, duration: e.duration, t: 0, magOut: false, magIn: false, racked: false, opened: false, dumped: false, closed: false, vented: false, emptyStart: this.game.weapons.active.ammo <= 0 };
     }
 
     _onReloadEnd() {
-      if (this.reload && this.reload.style === 'shell' && this.reload.emptyStart) {
+      const r = this.reload;
+      if (r && r.style === 'shell' && r.emptyStart && this.mech.cycle === 'pump') {
         this.pumpT = 0;
         this.pumpQueued = false;
       }
-      if (this.reload && this.reload.style === 'magazine' && this.slideLocked && !this.reload.racked) this.audio.play('rack');
+      if (r && (r.style === 'magazine' || r.style === 'box') && this.slideLocked && !r.racked) this.audio.play('rack');
+      if (r && r.style === 'vent') this.glow = 1;
       this.slideLocked = false;
       this.reload = null;
     }
@@ -158,13 +263,22 @@
     update(dt) {
       if (dt <= 0) return;
       this.t += dt;
-      const sp = this.spring;
+      const sp = this.pose;
       const acc = -sp.k * this.rec - sp.c * this.recVel;
       this.recVel += acc * dt;
       this.rec += this.recVel * dt;
       this.sinceShot += dt;
       this.flash.age += dt;
       this.shellAnim += dt;
+      this.cyl = U.damp(this.cyl, this.cylTarget, 22, dt);
+      if (this.mech.spin) {
+        this.spin += this.spinVel * dt;
+        if (this.sinceShot > 0.08) this.spinVel *= Math.exp(-2.2 * dt);
+      }
+      if (this.mech.energy && !this.reload) {
+        if (this.mech.charge) this.glow = Math.min(1, this.glow + dt / 0.9);
+        else this.glow = U.damp(this.glow, 0.65 + 0.12 * Math.sin(this.t * 7), 6, dt);
+      }
 
       // Pump cycle: back, eject, forward.
       if (this.pumpT < 9) {
@@ -177,35 +291,30 @@
         }
         if (prev < 0.31 && this.pumpT >= 0.31) this.audio.play('pumpFwd');
       }
+      // Bolt-action cycle: lift, pull (eject), push, lower.
+      if (this.boltT < 9) {
+        const prev = this.boltT;
+        this.boltT += dt;
+        if (prev < 0.08 && this.boltT >= 0.08) this.audio.play('boltUp');
+        if (prev < 0.26 && this.boltT >= 0.26 && this.boltQueued) {
+          this._ejectCasing('rifle');
+          this.boltQueued = false;
+        }
+        if (prev < 0.4 && this.boltT >= 0.4) this.audio.play('boltDown');
+        if (this.boltT > 0.6) this.boltT = 9;
+      }
 
       const r = this.reload;
       let tiltTarget = 0;
       if (r) {
         r.t += dt;
         this.tiltStyle = r.style;
+        const p = this.game.weapons.progress;
         if (r.style === 'shell') tiltTarget = 1;
-        else {
-          const p = this.game.weapons.progress;
-          tiltTarget = smoothstep(0, 0.12, p) * (1 - smoothstep(0.8, 1, p));
-        }
+        else tiltTarget = smoothstep(0, 0.12, p) * (1 - smoothstep(0.82, 1, p));
+        this._reloadEvents(r, p);
       }
       this.tilt = U.damp(this.tilt, tiltTarget, 16, dt);
-      if (r && r.style === 'magazine') {
-        const p = this.game.weapons.progress;
-        if (!r.magOut && p >= 0.04) {
-          r.magOut = true;
-          this.audio.play('magOut');
-        }
-        if (!r.magIn && p >= 0.58) {
-          r.magIn = true;
-          this.audio.play('magIn');
-        }
-        if (!r.racked && p >= 0.84 && this.slideLocked) {
-          r.racked = true;
-          this.slideLocked = false;
-          this.audio.play('rack');
-        }
-      }
 
       const g = this.game;
       const W = g.camera.W;
@@ -216,45 +325,133 @@
       this.swayY = U.damp(this.swayY, ty, 9, dt);
     }
 
+    /** Sounds and ejections at fixed points of each reload style. */
+    _reloadEvents(r, p) {
+      switch (r.style) {
+        case 'magazine':
+        case 'box':
+          if (!r.magOut && p >= 0.04) {
+            r.magOut = true;
+            this.audio.play(r.style === 'box' ? 'boxOpen' : 'magOut');
+          }
+          if (!r.magIn && p >= 0.58) {
+            r.magIn = true;
+            this.audio.play('magIn');
+          }
+          if (!r.racked && p >= 0.84 && (this.slideLocked || r.style === 'box')) {
+            r.racked = true;
+            this.slideLocked = false;
+            this.audio.play('rack');
+          }
+          break;
+        case 'cylinder':
+          if (!r.opened && p >= 0.06) {
+            r.opened = true;
+            this.audio.play('cylOut');
+          }
+          if (!r.dumped && p >= 0.2) {
+            r.dumped = true;
+            if (this.builder === 'revolver') for (let i = 0; i < 5; i++) this.fx.casing(this.eject.x + (Math.random() - 0.5) * 20, this.eject.y + 20, (Math.random() - 0.5) * 80, 60 + Math.random() * 120, 'pistol');
+          }
+          if (!r.magIn && p >= 0.55) {
+            r.magIn = true;
+            this.audio.play('shellIn');
+          }
+          if (!r.closed && p >= 0.84) {
+            r.closed = true;
+            this.cylTarget += 0.5;
+            this.audio.play('cylIn');
+          }
+          break;
+        case 'break':
+          if (!r.opened && p >= 0.08) {
+            r.opened = true;
+            this.audio.play('breakOpen');
+          }
+          if (!r.dumped && p >= 0.24) {
+            r.dumped = true;
+            for (let i = 0; i < 2; i++) this.fx.casing(this.eject.x, this.eject.y, -40 + i * 30, -(180 + Math.random() * 60), 'shell');
+          }
+          if (!r.magIn && p >= 0.55) {
+            r.magIn = true;
+            this.audio.play('shellIn');
+          }
+          if (!r.closed && p >= 0.84) {
+            r.closed = true;
+            this.audio.play('breakClose');
+          }
+          break;
+        case 'vent':
+          if (!r.vented && p >= 0.08) {
+            r.vented = true;
+            this.audio.play('vent');
+            for (let i = 0; i < 3; i++) this.fx.muzzleSmoke(this.eject.x, this.eject.y, 1.6);
+          }
+          if (!r.magIn && p >= 0.6) {
+            r.magIn = true;
+            this.audio.play('charge');
+          }
+          this.glow = p < 0.3 ? Math.max(0, 1 - p / 0.2) : smoothstep(0.55, 0.95, p);
+          break;
+        default:
+      }
+    }
+
     _anim() {
       const m = this.model;
-      const a = { slide: 0, pump: 0, bolt: 0, mag: 0, magAlpha: 1, magHidden: false };
-      if (m.slideTravel) {
+      const mech = this.mech;
+      const a = { slide: 0, pump: 0, bolt: 0, mag: 0, magAlpha: 1, magHidden: false, boltHandle: 0, cylinder: this.cyl, cylOut: 0, barrels: 0, spin: this.spin, glow: this.glow };
+      const tr = m.travel || {};
+      if (tr.slide) {
         const t = this.sinceShot;
         const pulse = t < 0.028 ? t / 0.028 : Math.max(0, 1 - (t - 0.028) / 0.06);
-        a.slide = this.slideLocked ? m.slideTravel : m.slideTravel * pulse;
+        a.slide = this.slideLocked ? tr.slide : tr.slide * pulse;
       }
-      if (m.boltTravel) {
+      if (tr.bolt && mech.cycle === 'bolt') {
         const t = this.sinceShot;
-        a.bolt = m.boltTravel * (t < 0.02 ? t / 0.02 : Math.max(0, 1 - (t - 0.02) / 0.035));
+        a.bolt = tr.bolt * (t < 0.02 ? t / 0.02 : Math.max(0, 1 - (t - 0.02) / 0.035));
       }
-      if (m.pumpTravel && this.pumpT < 9) {
+      if (tr.pump && this.pumpT < 9) {
         const t = this.pumpT;
-        const back = smoothstep(0.1, 0.2, t) * (1 - smoothstep(0.26, 0.36, t));
-        a.pump = m.pumpTravel * back;
+        a.pump = tr.pump * smoothstep(0.1, 0.2, t) * (1 - smoothstep(0.26, 0.36, t));
+      }
+      if (mech.cycle === 'boltAction' && this.boltT < 9) {
+        const t = this.boltT;
+        a.boltHandle = smoothstep(0.04, 0.26, t) * (1 - smoothstep(0.3, 0.52, t));
       }
       const r = this.reload;
-      if (r && r.style === 'magazine' && m.magDrop) {
+      if (r) {
         const p = this.game.weapons.progress;
-        if (p < 0.3) {
-          a.mag = U.easeInCubic(p / 0.3) * m.magDrop;
-          a.magAlpha = 1 - smoothstep(0.2, 0.3, p);
-        } else if (p < 0.55) {
-          a.mag = U.lerp(m.magDrop, 16, U.easeOutCubic((p - 0.3) / 0.25));
-        } else if (p < 0.6) {
-          a.mag = U.lerp(16, 0, (p - 0.55) / 0.05);
+        if ((r.style === 'magazine' || r.style === 'box' || r.style === 'vent') && m.magDrop) {
+          const drop = r.style === 'vent' ? Math.min(m.magDrop, 40) : m.magDrop;
+          if (p < 0.3) {
+            a.mag = U.easeInCubic(p / 0.3) * drop;
+            a.magAlpha = r.style === 'vent' ? 1 : 1 - smoothstep(0.2, 0.3, p);
+          } else if (p < 0.55) {
+            a.mag = U.lerp(drop, r.style === 'vent' ? drop * 0.6 : 16, U.easeOutCubic((p - 0.3) / 0.25));
+          } else if (p < 0.62) {
+            a.mag = U.lerp(r.style === 'vent' ? drop * 0.6 : 16, 0, (p - 0.55) / 0.07);
+          }
         }
+        if (r.style === 'cylinder') {
+          const out = smoothstep(0.04, 0.16, p) * (1 - smoothstep(0.8, 0.9, p));
+          a.cylOut = out * (this.builder === 'launcher' ? 26 : 34);
+          if (m.anchors.loadPort == null && p > 0.3 && p < 0.8) a.cylinder = this.cyl + Math.floor((p - 0.3) * 12) * 0.25;
+        }
+        if (r.style === 'break') a.barrels = 0.42 * smoothstep(0.05, 0.18, p) * (1 - smoothstep(0.78, 0.9, p));
+        if (r.style === 'magazine' && this.model.clip && p > 0.04 && p < 0.25) a.bolt = (tr.bolt || 16) * 1.5;
       }
       return a;
     }
 
-    /** Computes the screen transform. Returns the base transform params. */
+    /** Computes the screen transform. */
     _pose() {
       const g = this.game;
       const W = g.camera.W;
       const H = g.camera.H;
-      const sp = this.spring;
-      const s = (H / 1080) * sp.scale;
+      const sp = this.pose;
+      // Long guns are drawn larger and held flatter, stock off the bottom edge.
+      const s = (H / 1080) * (this.model.scale || 1.2) * (sp.long ? 1.3 : 1);
       const wState = g.weapons.state;
       let drawOff = 0;
       let drawRot = 0;
@@ -263,15 +460,20 @@
         drawOff = (1 - p) * H * 0.5;
         drawRot = (1 - p) * 0.5;
       }
-      const reloadRot = this.tilt * (this.tiltStyle === 'shell' ? 0.28 : 0.42);
-      const reloadDrop = this.tilt * H * 0.05;
+      const style = this.tiltStyle;
+      const rot = style === 'shell' ? 0.28 : style === 'cylinder' ? 0.55 : style === 'break' ? -0.22 : style === 'vent' ? 0.22 : style === 'box' ? 0.3 : 0.42;
+      const reloadRot = this.tilt * rot;
+      const reloadDrop = this.tilt * H * (style === 'break' ? 0.02 : 0.05);
       const bob = Math.sin(this.t * 1.7) * 3 * s;
+      // Heavy guns shudder while the barrels spin.
+      const shudder = this.mech.spin && this.spinVel > 200 ? Math.sin(this.t * 90) * Math.min(1, this.spinVel / 1400) * 2 * s : 0;
       const px = W * sp.x + this.swayX;
-      const py = H * sp.y + this.swayY + drawOff + reloadDrop + bob;
+      const py = H * sp.y + this.swayY + drawOff + reloadDrop + bob + shudder;
       const dx = g.aim.x - px;
       const dy = g.aim.y - py;
       const full = Math.atan2(-dy, -dx);
-      const theta = U.clamp(U.lerp(0.12, full, 0.42), -0.15, 0.62) + drawRot + reloadRot;
+      const aimT = sp.long ? U.clamp(U.lerp(0.2, full, 0.3), 0.02, 0.48) : U.clamp(U.lerp(0.12, full, 0.42), -0.15, 0.62);
+      const theta = aimT + drawRot + reloadRot;
       return { px, py, s, theta };
     }
 
@@ -281,10 +483,11 @@
       const anim = this._anim();
       const rec = this.rec;
       const hand = m.anchors.hand;
+      const kickX = rec * (this.builder === 'marksman' || this.builder === 'rail' || this.builder === 'launcher' ? 22 : 16);
 
-      // Keep anchor positions for FX (muzzle smoke, casings) in sync.
+      // Keep anchor positions for FX (muzzle smoke, casings, tracers) in sync.
       const A = this.affine.reset();
-      A.translate(pose.px, pose.py).rotate(pose.theta).scale(-pose.s, pose.s).translate(-rec * 16, rec * 2).rotate(-rec * 0.11).translate(-hand.x, -hand.y);
+      A.translate(pose.px, pose.py).rotate(pose.theta).scale(-pose.s, pose.s).translate(-kickX, rec * 2).rotate(-rec * 0.11).translate(-hand.x, -hand.y);
       const mz = A.apply(m.anchors.muzzle.x, m.anchors.muzzle.y);
       const ej = A.apply(m.anchors.eject.x, m.anchors.eject.y);
       this.muzzle.x = mz.x;
@@ -296,15 +499,16 @@
       ctx.translate(pose.px, pose.py);
       ctx.rotate(pose.theta);
       ctx.scale(-pose.s, pose.s);
-      ctx.translate(-rec * 16, rec * 2);
+      ctx.translate(-kickX, rec * 2);
       ctx.rotate(-rec * 0.11);
       ctx.translate(-hand.x, -hand.y);
 
       this._drawArm(ctx, m, dpr);
-      ZTA.GunArt.draw(ctx, m, anim, 'ink', dpr);
+      if (m.anchors.support) this._drawSupport(ctx, m, anim, 'arm');
+      ZTA.GunArt.draw(ctx, m, anim, 'ink', dpr, this.finish);
       this._drawShell(ctx, m);
       this._drawHand(ctx, m);
-      if (m.anchors.support) this._drawSupport(ctx, m, anim);
+      if (m.anchors.support) this._drawSupport(ctx, m, anim, 'thumb');
       this._drawFlash(ctx, m);
       ctx.restore();
     }
@@ -388,34 +592,58 @@
       ctx.restore();
     }
 
-    _drawSupport(ctx, m, anim) {
+    /** Support hand: arm and palm under the fore-end, thumb wrapped over it. */
+    _drawSupport(ctx, m, anim, layer) {
       const s = m.anchors.support;
       const x = s.x - (anim.pump || 0);
       ctx.save();
-      const arm = new Path2D();
-      arm.moveTo(x - 30, s.y - 6);
-      arm.lineTo(x + 34, s.y - 4);
-      arm.lineTo(x + 10, s.y + 420);
-      arm.lineTo(x - 150, s.y + 420);
-      arm.closePath();
-      ctx.strokeStyle = P.paper;
-      ctx.lineWidth = 6;
-      ctx.stroke(arm);
-      ctx.fillStyle = P.charcoal;
-      ctx.fill(arm);
-      const hand = new Path2D();
-      hand.ellipse(x, s.y - 4, 44, 26, 0, 0, Math.PI * 2);
-      ctx.stroke(hand);
-      ctx.fillStyle = P.ink2;
-      ctx.fill(hand);
-      ctx.strokeStyle = ZTA.paint.rgba(P.paper, 0.5);
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      for (let i = -1; i <= 1; i++) {
-        ctx.moveTo(x + i * 18, s.y - 22);
-        ctx.lineTo(x + i * 18 + 4, s.y + 4);
+      ctx.lineJoin = 'round';
+      if (layer === 'arm') {
+        const arm = new Path2D();
+        arm.moveTo(x - 34, s.y + 4);
+        arm.lineTo(x + 30, s.y + 6);
+        arm.lineTo(x + 10, s.y + 420);
+        arm.lineTo(x - 150, s.y + 420);
+        arm.closePath();
+        ctx.strokeStyle = P.paper;
+        ctx.lineWidth = 6;
+        ctx.stroke(arm);
+        ctx.fillStyle = P.charcoal;
+        ctx.fill(arm);
+        const palm = new Path2D();
+        palm.ellipse(x - 2, s.y + 6, 42, 24, 0, 0, Math.PI * 2);
+        ctx.stroke(palm);
+        ctx.fillStyle = P.ink2;
+        ctx.fill(palm);
+        ctx.strokeStyle = ZTA.paint.rgba(P.paper, 0.35);
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(x - 30, s.y + 16);
+        ctx.quadraticCurveTo(x - 4, s.y + 26, x + 24, s.y + 14);
+        ctx.stroke();
+      } else {
+        // Thumb along the near side of the handguard.
+        const thumb = new Path2D();
+        const a0 = x - 36;
+        const a1 = x + 30;
+        const y = s.y - 10;
+        thumb.moveTo(a0, y - 8);
+        thumb.lineTo(a1, y - 6);
+        thumb.arc(a1, y + 1, 7, -Math.PI / 2, Math.PI / 2);
+        thumb.lineTo(a0, y + 12);
+        thumb.closePath();
+        ctx.strokeStyle = P.paper;
+        ctx.lineWidth = 4;
+        ctx.stroke(thumb);
+        ctx.fillStyle = P.ink2;
+        ctx.fill(thumb);
+        ctx.strokeStyle = ZTA.paint.rgba(P.paper, 0.4);
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(a1 - 12, y - 5);
+        ctx.lineTo(a1 - 12, y + 7);
+        ctx.stroke();
       }
-      ctx.stroke();
       ctx.restore();
     }
 
@@ -446,34 +674,135 @@
       const mz = m.anchors.muzzle;
       const k = 1 - f.age / f.life;
       const size = 34 * f.size * (settings.flashes ? 1 : 0.6) * (0.7 + 0.3 * k);
-      ctx.save();
-      ctx.translate(mz.x, mz.y);
-      const spikes = 9;
       let seed = f.seed;
       const rnd = () => {
         seed = (seed * 9301 + 49297) % 233280;
         return seed / 233280;
       };
-      ctx.beginPath();
-      for (let i = 0; i <= spikes * 2; i++) {
-        const a = (i / (spikes * 2)) * Math.PI * 2;
-        const r = i % 2 === 0 ? size * (0.6 + rnd() * 0.6) : size * 0.28;
-        const x = Math.cos(a) * r * (Math.cos(a) > 0 ? 1.9 : 0.7);
-        const y = Math.sin(a) * r * 0.85;
-        if (i === 0) ctx.moveTo(x + size * 0.35, y);
-        else ctx.lineTo(x + size * 0.35, y);
+      const ink = (path, fill, width) => {
+        ctx.strokeStyle = P.ink;
+        ctx.lineWidth = width || 3;
+        ctx.lineJoin = 'round';
+        ctx.stroke(path);
+        ctx.fillStyle = fill;
+        ctx.fill(path);
+      };
+      const star = (cx, spikes, lenFwd, lenBack, height) => {
+        const p = new Path2D();
+        for (let i = 0; i <= spikes * 2; i++) {
+          const a = (i / (spikes * 2)) * Math.PI * 2;
+          const r = i % 2 === 0 ? size * (0.6 + rnd() * 0.6) : size * 0.28;
+          const x = Math.cos(a) * r * (Math.cos(a) > 0 ? lenFwd : lenBack);
+          const y = Math.sin(a) * r * height;
+          if (i === 0) p.moveTo(x + cx, y);
+          else p.lineTo(x + cx, y);
+        }
+        p.closePath();
+        return p;
+      };
+      ctx.save();
+      ctx.translate(mz.x, mz.y);
+      switch (f.kind) {
+        case 'arc': {
+          // Crackling bolts that fork off the emitter.
+          for (const [c, w] of [
+            [P.ink, 6],
+            [P.paperHi, 2.4],
+          ]) {
+            ctx.strokeStyle = c;
+            ctx.lineWidth = w;
+            ctx.lineCap = 'round';
+            let s2 = f.seed;
+            const r2 = () => {
+              s2 = (s2 * 9301 + 49297) % 233280;
+              return s2 / 233280;
+            };
+            ctx.beginPath();
+            for (let b = 0; b < 4; b++) {
+              let x = 0;
+              let y = 0;
+              ctx.moveTo(x, y);
+              const dir = (r2() - 0.5) * 1.6;
+              for (let j = 0; j < 5; j++) {
+                x += size * (0.35 + r2() * 0.3);
+                y += Math.sin(dir) * size * 0.3 + (r2() - 0.5) * size * 0.5;
+                ctx.lineTo(x, y);
+              }
+            }
+            ctx.stroke();
+          }
+          const core = new Path2D();
+          core.arc(0, 0, size * 0.3, 0, Math.PI * 2);
+          ink(core, P.paperHi, 3);
+          break;
+        }
+        case 'energy': {
+          const ring = new Path2D();
+          ring.ellipse(size * 0.2, 0, size * 0.35, size * 0.55, 0, 0, Math.PI * 2);
+          ctx.strokeStyle = P.ink;
+          ctx.lineWidth = 6;
+          ctx.stroke(ring);
+          ctx.strokeStyle = P.paperHi;
+          ctx.lineWidth = 3;
+          ctx.stroke(ring);
+          const dot = new Path2D();
+          dot.arc(size * 0.2, 0, size * 0.18, 0, Math.PI * 2);
+          ink(dot, P.paperHi, 2);
+          break;
+        }
+        case 'rail': {
+          for (let i = 0; i < 3; i++) {
+            const ring = new Path2D();
+            const x = size * (0.3 + i * 0.55) * (1.4 - k * 0.4);
+            ring.ellipse(x, 0, size * 0.18, size * (0.75 - i * 0.15), 0, 0, Math.PI * 2);
+            ctx.strokeStyle = P.ink;
+            ctx.lineWidth = 7;
+            ctx.stroke(ring);
+            ctx.strokeStyle = P.paperHi;
+            ctx.lineWidth = 3;
+            ctx.stroke(ring);
+          }
+          ink(star(size * 0.3, 11, 2.2, 0.6, 0.7), P.paperHi, 3);
+          const core = new Path2D();
+          core.arc(size * 0.3, 0, size * 0.3, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill(core);
+          break;
+        }
+        case 'puff': {
+          const cloud = new Path2D();
+          for (let i = 0; i < 5; i++) {
+            const a = (i / 5) * Math.PI * 2 + f.seed;
+            cloud.moveTo(size * 0.5 + Math.cos(a) * size * 0.5 + size * 0.45, Math.sin(a) * size * 0.45);
+            cloud.arc(size * 0.5 + Math.cos(a) * size * 0.5, Math.sin(a) * size * 0.45, size * 0.45, 0, Math.PI * 2);
+          }
+          ctx.fillStyle = ZTA.paint.rgba(P.smoke, 0.8);
+          ctx.fill(cloud);
+          ink(star(size * 0.35, 9, 1.4, 0.7, 0.85), P.paperHi, 3);
+          break;
+        }
+        default: {
+          ink(star(size * 0.35, 9, 1.9, 0.7, 0.85), P.paperHi, 3);
+          if (f.kind === 'comp' || f.kind === 'brake') {
+            // Ported gas: jets up (compensator) or both sides (muzzle brake).
+            const sides = f.kind === 'comp' ? [-1] : [-1, 1];
+            for (const sd of sides) {
+              const jet = new Path2D();
+              const bx = f.kind === 'comp' ? -size * 0.2 : -size * 0.1;
+              jet.moveTo(bx - size * 0.15, 0);
+              jet.lineTo(bx - size * 0.35, sd * size * (1.1 + rnd() * 0.4));
+              jet.lineTo(bx + size * 0.05, sd * size * (0.9 + rnd() * 0.3));
+              jet.lineTo(bx + size * 0.15, 0);
+              jet.closePath();
+              ink(jet, P.paperHi, 3);
+            }
+          }
+          const core = new Path2D();
+          core.arc(size * 0.25, 0, size * 0.22, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill(core);
+        }
       }
-      ctx.closePath();
-      ctx.fillStyle = P.paperHi;
-      ctx.strokeStyle = P.ink;
-      ctx.lineWidth = 3;
-      ctx.lineJoin = 'round';
-      ctx.stroke();
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(size * 0.25, 0, size * 0.22, 0, Math.PI * 2);
-      ctx.fillStyle = '#ffffff';
-      ctx.fill();
       ctx.restore();
     }
   }

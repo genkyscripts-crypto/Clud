@@ -13,11 +13,13 @@ const LOGIC_FILES = [
   'js/core/namespace.js',
   'js/core/numbers.js',
   'js/core/pool.js',
-  'js/data/range.js',
+  'js/data/ranges.js',
   'js/data/targets.js',
   'js/data/weapons.js',
   'js/data/upgrades.js',
-  'js/data/waves.js',
+  'js/data/challenges.js',
+  'js/data/bosses.js',
+  'js/data/meta.js',
   'js/systems/perks.js',
   'js/systems/content.js',
   'js/systems/save.js',
@@ -29,6 +31,7 @@ const LOGIC_FILES = [
   'js/game/weapons.js',
   'js/game/ballistics.js',
   'js/game/director.js',
+  'js/game/challenge.js',
   'js/game/game.js',
 ];
 

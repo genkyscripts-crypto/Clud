@@ -1,5 +1,5 @@
 /*
- * Boot, input, main loop, audio wiring and autosave.
+ * Boot, input, main loop, audio wiring, training lanes and autosave.
  */
 (function (root) {
   'use strict';
@@ -32,6 +32,19 @@
       onClose: () => app.menus.closeAll(),
       onReveal: (id) => app.menus.showReveal(id),
       onTest: (id) => app.testGun(id),
+      onMap: (rangeId) => app.menus.toggleMap(rangeId),
+    });
+    app.map = new ZTA.UI.MapScreen(game, audio, {
+      onClose: () => app.menus.closeAll(),
+      onBranch: () => app.menus.showBranch(),
+      onStartChallenge: (id, modId) => {
+        const r = game.startChallenge(id, modId);
+        if (r.ok) app.menus.closeAll();
+        else {
+          audio.play('ui_deny');
+          app.hud.toast('<strong>Not yet</strong>' + (r.reason || ''), 'new', 2600);
+        }
+      },
     });
     app.menus = new ZTA.UI.Menus(app);
     app.testGun = (id) => testGun(app, id);
@@ -46,6 +59,8 @@
     wireAudio(app);
     wireSaving(app);
     wireInput(app, canvas);
+    wireLanes(app);
+    game.events.on('challenge:end', (e) => setTimeout(() => app.menus.showResults(e), e.def.boss && e.completed ? 1600 : 700));
     startLoop(app);
 
     root.ZTA.app = app;
@@ -82,6 +97,9 @@
     ev.on('wave:clear', () => {
       app.dirty = true;
     });
+    ev.on('blueprints:changed', () => {
+      app.dirty = true;
+    });
     app.lastSave = performance.now();
     setInterval(() => {
       if (app.dirty && performance.now() - app.lastSave > AUTOSAVE_SECONDS * 1000) writeSave(app, 'interval');
@@ -100,7 +118,7 @@
     const audio = app.audio;
     const game = app.game;
     const pan = (x) => ((x / game.camera.W) * 2 - 1) * 0.6;
-    ev.on('weapon:fired', (e) => audio.gunshot(e.stats.audio, { comboTier: game.combo.tier }));
+    ev.on('weapon:fired', (e) => audio.gunshot(e.stats.audio, { comboTier: game.combo.tier, pitch: e.stats.pitch || 1 }));
     ev.on('target:hit', (e) => {
       if (e.broken) return;
       const kind = e.weak ? 'crit' : e.armored ? 'armor' : 'hit';
@@ -116,11 +134,58 @@
       if (im) audio.impact(im.kind === 'prop' ? 'wood' : 'backstop', 'hit', { pan: pan(im.x) });
     });
     ev.on('target:landed', () => audio.play('land'));
+    ev.on('explosion', (e) => audio.explosion(e.kind, { pan: pan(e.sx) }));
+    ev.on('target:appeared', (e) => {
+      if (e.target.kind === 'popper') audio.play('popup', { pan: pan(ZTA.TargetArt.center(e.target, game.camera, {}).sx) });
+    });
+    ev.on('target:escaped', (e) => {
+      if (e.target.kind === 'drone' || game.run) audio.play('escape');
+    });
+    ev.on('challenge:start', (e) => {
+      audio.play('count');
+      if (e.def.boss) audio.play('boss_intro');
+    });
+    ev.on('challenge:tick', () => audio.play('count'));
+    ev.on('challenge:go', () => audio.play('go'));
+    ev.on('boss:defeated', () => audio.play('boss_down'));
+    let enraged = null;
+    ev.on('target:broken', () => {
+      const b = game.targets.boss;
+      if (b && b.enraged && enraged !== b) {
+        enraged = b;
+        audio.play('boss_enrage');
+      }
+    });
+    ev.on('range:unlocked', () => audio.play('unlock'));
+    ev.on('milestone:reached', () => audio.play('unlock'));
+    ev.on('mastery:level', () => audio.play('wave_clear'));
     ev.on('wave:clear', () => audio.play('wave_clear'));
     ev.on('combo:changed', (e) => {
       if (e.tierUp) audio.play('combo_up', { tier: e.tier });
     });
     ev.on('purchase:denied', () => audio.play('ui_deny'));
+  }
+
+  /* ------------------------------------------------------------------ lanes */
+
+  /**
+   * Training lanes accrue against the wall clock: once at boot (time away)
+   * and then every second. Progression.tickLanes is clock-safe and capped.
+   */
+  function wireLanes(app) {
+    const p = app.game.progression;
+    const first = p.tickLanes(Date.now());
+    if (first.gained >= 1 && first.elapsed >= 60) app.menus.showOffline(first);
+    let sinceCollect = 0;
+    setInterval(() => {
+      p.tickLanes(Date.now());
+      const g = p.globals();
+      sinceCollect += 1;
+      if (g.autoCollect && sinceCollect >= ZTA.data.meta.lanes.assistantInterval && app.game.save.lanes.stored >= 1) {
+        sinceCollect = 0;
+        p.collectLanes();
+      }
+    }, 1000);
   }
 
   /* ------------------------------------------------------------------ input */
@@ -200,6 +265,11 @@
       if (e.key === 'Escape') {
         e.preventDefault();
         menus.back();
+        return;
+      }
+      if ((e.key === 'm' || e.key === 'M') && !e.repeat && menus.started && !(e.target && /INPUT|SELECT|TEXTAREA/.test(e.target.tagName))) {
+        e.preventDefault();
+        menus.toggleMap();
         return;
       }
       if (!menus.started && (e.key === 'Enter' || e.key === ' ') && document.activeElement === document.body) {
