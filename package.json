@@ -1,0 +1,14 @@
+{
+  "name": "zero-to-armory",
+  "version": "0.1.0",
+  "private": true,
+  "description": "First-person shooting-range incremental game in plain HTML5 canvas and JavaScript.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "npx --yes serve -l 5173 .",
+    "test": "node --test tests/unit.test.cjs",
+    "test:e2e": "node tests/e2e.cjs",
+    "pacing": "node tools/pacing-sim.cjs 5 15 average",
+    "build": "node tools/build-single.mjs"
+  }
+}

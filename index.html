@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Zero to Armory</title>
+<meta name="description" content="A first-person shooting-range incremental game. Break targets, earn cash, upgrade and collect guns.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Stencil+Display:wght@700;800;900&family=Big+Shoulders+Display:wght@600;700;800&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <canvas id="stage" aria-label="Shooting range. Aim with the mouse and hold the left button to fire."></canvas>
+
+  <div id="hud" hidden>
+    <div class="hud-tl">
+      <div class="cash" id="hud-cash" aria-live="off">$0</div>
+      <div class="goal" id="hud-goal">
+        <div class="goal-row"><span class="goal-label">Next gun</span><span class="goal-name" id="goal-name"></span><span class="goal-cost" id="goal-cost"></span></div>
+        <div class="goal-bar"><i id="goal-fill"></i></div>
+      </div>
+    </div>
+
+    <div class="hud-tc">
+      <div class="wave" id="hud-wave">Wave 01</div>
+      <div class="pips" id="hud-pips"></div>
+    </div>
+
+    <div class="hud-tr">
+      <button class="chip" id="btn-armory" type="button"><kbd>Tab</kbd>Armory</button>
+      <button class="chip" id="btn-menu" type="button"><kbd>Esc</kbd>Menu</button>
+    </div>
+
+    <div class="hud-bl" id="hud-slots"></div>
+
+    <div class="hud-bc">
+      <div class="hint" id="hud-hint" hidden></div>
+      <div class="combo" id="hud-combo">
+        <span class="combo-label">Combo</span>
+        <b id="combo-mult">×1.0</b>
+        <div class="combo-bar"><i id="combo-fill"></i></div>
+      </div>
+    </div>
+
+    <div class="hud-br">
+      <div class="perk-chip" id="hud-perk" hidden></div>
+      <div class="ammo"><b id="ammo-cur">15</b><span id="ammo-max">/ 15</span></div>
+      <div class="wname" id="hud-wname"></div>
+      <div class="reload-bar"><i id="reload-fill"></i></div>
+    </div>
+
+    <div class="toasts" id="toasts" aria-live="polite"></div>
+
+    <div class="touch" id="touch-controls" hidden>
+      <button type="button" class="chip" id="touch-reload">Reload</button>
+      <button type="button" class="chip" id="touch-switch">Switch</button>
+    </div>
+  </div>
+
+  <!-- Title -->
+  <section class="overlay title-screen" id="title" aria-labelledby="title-heading">
+    <div class="title-inner">
+      <p class="eyebrow">Bench Lane 01 · Practice range</p>
+      <h1 id="title-heading" class="title-mark"><span>Zero</span><span class="to">to</span><span>Armory</span></h1>
+      <p class="lede">Start with a cheap pistol. Break targets, earn cash, and fill the wall with guns that each shoot differently.</p>
+      <div class="title-actions">
+        <button class="btn primary" id="btn-start" type="button">Start shooting</button>
+        <p class="save-line" id="save-line"></p>
+      </div>
+      <ul class="controls" aria-label="Controls">
+        <li><kbd>Hold LMB</kbd> Fire</li>
+        <li><kbd>R</kbd> Reload early</li>
+        <li><kbd>1</kbd><kbd>2</kbd><kbd>3</kbd> / wheel Switch gun</li>
+        <li><kbd>Tab</kbd> Armory &amp; upgrades</li>
+        <li><kbd>Esc</kbd> Pause</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- Pause -->
+  <section class="overlay dim" id="pause" hidden aria-labelledby="pause-heading">
+    <div class="panel narrow">
+      <h2 id="pause-heading" class="panel-title">Paused</h2>
+      <div class="stack">
+        <button class="btn primary" type="button" data-action="resume">Resume</button>
+        <button class="btn" type="button" data-action="armory">Armory</button>
+        <button class="btn" type="button" data-action="settings">Settings</button>
+      </div>
+      <dl class="statlist" id="pause-stats"></dl>
+    </div>
+  </section>
+
+  <!-- Settings -->
+  <section class="overlay dim" id="settings" hidden aria-labelledby="settings-heading">
+    <div class="panel narrow">
+      <h2 id="settings-heading" class="panel-title">Settings</h2>
+      <div class="toggles">
+        <label class="toggle"><input type="checkbox" id="set-shake"><span>Screen shake</span></label>
+        <label class="toggle"><input type="checkbox" id="set-flashes"><span>Flashes</span></label>
+        <label class="toggle"><input type="checkbox" id="set-damageNumbers"><span>Damage numbers</span></label>
+        <label class="toggle"><input type="checkbox" id="set-hitMarkers"><span>Hit markers</span></label>
+        <label class="toggle"><input type="checkbox" id="set-intenseFx"><span>Intense effects</span></label>
+        <label class="toggle"><input type="checkbox" id="set-muted"><span>Mute audio</span></label>
+        <label class="slider"><span>Volume</span><input type="range" id="set-volume" min="0" max="100" step="1"></label>
+      </div>
+      <p class="note">All sounds are procedural placeholder audio generated in the browser.</p>
+      <div class="stack">
+        <button class="btn" type="button" data-action="back">Back</button>
+        <button class="btn danger" type="button" id="btn-reset">Reset progress</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Armory -->
+  <section class="overlay armory" id="armory" hidden aria-labelledby="armory-heading">
+    <header class="armory-head">
+      <h2 id="armory-heading" class="armory-title">Armory</h2>
+      <div class="tabs" role="tablist">
+        <button type="button" role="tab" class="tab" id="tab-weapons" data-tab="weapons" aria-selected="true">Weapons</button>
+        <button type="button" role="tab" class="tab" id="tab-range" data-tab="range" aria-selected="false">Range</button>
+      </div>
+      <div class="armory-cash" id="armory-cash">$0</div>
+      <button type="button" class="chip close" data-action="close"><kbd>Tab</kbd>Back to range</button>
+    </header>
+    <div class="armory-body" id="armory-body"></div>
+  </section>
+
+  <!-- Unlock reveal -->
+  <section class="overlay reveal" id="reveal" hidden aria-labelledby="reveal-name">
+    <div class="reveal-inner">
+      <p class="eyebrow accent">New in the armory</p>
+      <canvas id="reveal-canvas" width="720" height="300" aria-hidden="true"></canvas>
+      <p class="reveal-maker" id="reveal-maker"></p>
+      <h2 class="reveal-name" id="reveal-name"></h2>
+      <p class="reveal-perk" id="reveal-perk"></p>
+      <div class="reveal-actions">
+        <button type="button" class="btn accent" data-action="test">Test gun</button>
+        <button type="button" class="btn" data-action="back">Back to armory</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script src="js/core/namespace.js"></script>
+<script src="js/core/numbers.js"></script>
+<script src="js/core/pool.js"></script>
+<script src="js/data/range.js"></script>
+<script src="js/data/targets.js"></script>
+<script src="js/data/weapons.js"></script>
+<script src="js/data/upgrades.js"></script>
+<script src="js/data/waves.js"></script>
+<script src="js/systems/perks.js"></script>
+<script src="js/systems/content.js"></script>
+<script src="js/systems/save.js"></script>
+<script src="js/systems/economy.js"></script>
+<script src="js/systems/progression.js"></script>
+<script src="js/systems/combo.js"></script>
+<script src="js/systems/audio.js"></script>
+<script src="js/game/camera.js"></script>
+<script src="js/game/targets.js"></script>
+<script src="js/game/weapons.js"></script>
+<script src="js/game/ballistics.js"></script>
+<script src="js/game/director.js"></script>
+<script src="js/game/game.js"></script>
+<script src="js/render/palette.js"></script>
+<script src="js/render/background.js"></script>
+<script src="js/render/gunart.js"></script>
+<script src="js/render/targetart.js"></script>
+<script src="js/render/fx.js"></script>
+<script src="js/render/viewmodel.js"></script>
+<script src="js/render/renderer.js"></script>
+<script src="js/ui/hud.js"></script>
+<script src="js/ui/armory.js"></script>
+<script src="js/ui/menus.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
