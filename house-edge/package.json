@@ -1,0 +1,14 @@
+{
+  "name": "house-edge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Top-down incremental bullet-hell roguelite in a casino run by monsters. Plain HTML5 canvas and JavaScript.",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "npx --yes serve -l 5174 .",
+    "test": "node --test tests/unit.test.cjs",
+    "test:e2e": "node tests/e2e.cjs",
+    "pacing": "node tools/pacing.cjs 8",
+    "build": "node tools/build-single.mjs"
+  }
+}

@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>House Edge</title>
+<meta name="description" content="A top-down incremental bullet-hell roguelite set in a casino run by monsters. Dodge the odds. Rig the reels. Break the bank.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Big+Shoulders+Stencil+Display:wght@700;800;900&family=Big+Shoulders+Display:wght@600;700;800&family=Barlow:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <canvas id="stage" aria-label="House Edge arena. WASD to move, mouse to aim, left button to fire, Space to dash, Q to spin."></canvas>
+  <div id="ui" hidden></div>
+  <div id="toasts" aria-live="polite"></div>
+  <noscript><p class="nojs">House Edge needs JavaScript.</p></noscript>
+</div>
+<script src="js/core/namespace.js"></script>
+<script src="js/core/pool.js"></script>
+<script src="js/data/content.js"></script>
+<script src="js/systems/slots.js"></script>
+<script src="js/systems/economy.js"></script>
+<script src="js/systems/facilities.js"></script>
+<script src="js/systems/save.js"></script>
+<script src="js/systems/catalog.js"></script>
+<script src="js/game/fx.js"></script>
+<script src="js/game/perks.js"></script>
+<script src="js/game/spins.js"></script>
+<script src="js/game/enemies.js"></script>
+<script src="js/game/boss.js"></script>
+<script src="js/game/director.js"></script>
+<script src="js/game/run.js"></script>
+<script src="js/game/game.js"></script>
+<script src="js/game/debug.js"></script>
+<script src="js/systems/input.js"></script>
+<script src="js/systems/audio.js"></script>
+<script src="js/render/symbols.js"></script>
+<script src="js/render/renderer.js"></script>
+<script src="js/ui/ui.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>

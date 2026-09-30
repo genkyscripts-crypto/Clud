@@ -1,5 +1,7 @@
 # ZERO TO ARMORY
 
+> **Also in this repository:** [HOUSE EDGE](house-edge/README.md), a top-down bullet-hell roguelite set in a casino, with a combat slot machine and a bank-or-press-on economy. It uses the same plain HTML5 Canvas stack. Open `house-edge/index.html` to play.
+
 A first-person shooting-range incremental game in plain HTML5 Canvas and JavaScript. You start at a basement bench with a cheap pistol. Breaking targets earns cash, cash buys upgrades, guns and new ranges, and every gun plays differently.
 
 **Shoot → break targets → earn → upgrade → unlock guns → beat challenges → open new ranges → expand the armory.**
