@@ -4,85 +4,163 @@ cd /d "%~dp0"
 
 rem ============================================================
 rem DGFIX.bat
-rem Writes DGFIX.ps1 next to this file, then runs it elevated.
-rem The PS1 runs Microsoft's DG Readiness Tool with -Disable to
-rem turn off Device Guard, Credential Guard and HVCI.
+rem Decodes an embedded Base64 PowerShell script to DGFIX.ps1,
+rem then runs it. The PS1 shows an ASCII "FIX" menu (press F3),
+rem self-elevates via UAC, runs Microsoft's DG Readiness Tool
+rem with -Disable, then offers to restart the PC.
 rem ============================================================
 
 set "PS1=%~dp0DGFIX.ps1"
+set "B64=%TEMP%\DGFIX_%RANDOM%%RANDOM%.b64"
 
-rem ---- Write the PowerShell script (literal, no expansion) ----
->"%PS1%" (
-echo #Requires -Version 5.1
-echo [CmdletBinding^(^)]
-echo param^(^)
-echo $ErrorActionPreference = 'Stop'
-echo $transcribing = $false
-echo try {
-echo     $principal = New-Object Security.Principal.WindowsPrincipal^([Security.Principal.WindowsIdentity]::GetCurrent^(^)^)
-echo     $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-echo     if ^(-not $principal.IsInRole^([Security.Principal.WindowsBuiltInRole]::Administrator^)^) {
-echo         Write-Host 'Approve the Windows administrator prompt to continue.'
-echo         $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $PSCommandPath
-echo         $elevated = Start-Process -FilePath $powershell -Verb RunAs -ArgumentList $arguments -Wait -PassThru
-echo         if ^($elevated.ExitCode -ne 0^) { throw "Administrator process exited with code $^($elevated.ExitCode^)." }
-echo         return
-echo     }
-echo     $work = Join-Path $env:LOCALAPPDATA ^('DGFIX\Run-' + ^(Get-Date -Format 'yyyyMMdd-HHmmss'^) + '-' + [guid]::NewGuid^(^).ToString^('N'^).Substring^(0,8^)^)
-echo     New-Item -ItemType Directory -Path $work -Force ^| Out-Null
-echo     $log = Join-Path $work 'DGFIX-log.txt'
-echo     Start-Transcript -Path $log -Force ^| Out-Null
-echo     $transcribing = $true
-echo     Write-Host 'DG Readiness Tool Fix' -ForegroundColor Cyan
-echo     Write-Host 'This runs the Microsoft tool to disable Device Guard, Credential Guard and HVCI.'
-echo     Write-Host "Logs and downloaded files: $work"
-echo     $zip = Join-Path $work 'dgreadiness.zip'
-echo     $extract = Join-Path $work 'Tool'
-echo     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
-echo     $ProgressPreference = 'SilentlyContinue'
-echo     Write-Host '[1/3] Downloading Microsoft tool...'
-echo     Invoke-WebRequest -Uri 'https://download.microsoft.com/download/b/d/8/bd821b1f-05f2-4a7e-aa03-df6c4f687b07/dgreadiness_v3.6.zip' -OutFile $zip -UseBasicParsing -TimeoutSec 120
-echo     Write-Host '[2/3] Extracting...'
-echo     Expand-Archive -LiteralPath $zip -DestinationPath $extract -Force
-echo     $candidates = @^(Get-ChildItem -LiteralPath $extract -Filter '*.ps1' -Recurse ^| Where-Object { $_.Name -match 'DG_Readiness' }^)
-echo     if ^($candidates.Count -ne 1^) { throw "Expected one DG Readiness script; found $^($candidates.Count^). Files retained at $extract" }
-echo     $tool = $candidates[0]
-echo     Write-Host '[3/3] Running Microsoft tool -Disable...'
-echo     $stdout = Join-Path $work 'Microsoft-tool-output.txt'
-echo     $stderr = Join-Path $work 'Microsoft-tool-errors.txt'
-echo     $argsForTool = '-NoProfile -ExecutionPolicy Bypass -File "{0}" -Disable' -f $tool.FullName
-echo     $process = Start-Process -FilePath $powershell -ArgumentList $argsForTool -WorkingDirectory $tool.DirectoryName -NoNewWindow -Wait -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-echo     if ^(Test-Path $stdout^) { Get-Content $stdout ^| ForEach-Object { Write-Host $_ } }
-echo     if ^(Test-Path $stderr^) { Get-Content $stderr ^| ForEach-Object { Write-Host $_ -ForegroundColor Yellow } }
-echo     if ^($process.ExitCode -ne 0^) { throw "Microsoft tool returned code $^($process.ExitCode^). Review the logs above; completion is not confirmed." }
-echo     if ^(^(Get-Item $stderr^).Length -gt 0^) { throw 'Microsoft tool wrote errors. Review Microsoft-tool-errors.txt; completion is not confirmed.' }
-echo     Write-Host 'Microsoft tool exited with code 0. Restart manually, then verify the Windows security status.' -ForegroundColor Green
-echo     Write-Host 'Follow any on-screen firmware confirmation instructions shown during restart.' -ForegroundColor Yellow
-echo     Write-Host 'An exit code alone does not confirm that the protections are disabled.'
-echo } catch {
-echo     Write-Host "`n[ERROR] $^($_.Exception.Message^)" -ForegroundColor Red
-echo     Write-Host $_.InvocationInfo.PositionMessage -ForegroundColor DarkGray
-echo     if ^($work^) { Write-Host "Keep the files in: $work" }
-echo } finally {
-echo     if ^($transcribing^) { Stop-Transcript -ErrorAction SilentlyContinue ^| Out-Null }
-echo     Read-Host "`nPress Enter to close this window" ^| Out-Null
-echo }
-)
+rem ---- Emit embedded Base64 to a temp file ----
+(
+echo I1JlcXVpcmVzIC1WZXJzaW9uIDUuMQ0KW0NtZGxldEJpbmRpbmcoKV0NCnBhcmFtKCkNCiRFcnJv
+echo ckFjdGlvblByZWZlcmVuY2UgPSAnU3RvcCcNCiR0cmFuc2NyaWJpbmcgPSAkZmFsc2UNCg0KZnVu
+echo Y3Rpb24gU2V0LVRoZW1lIHsNCiAgICB0cnkgew0KICAgICAgICAkSG9zdC5VSS5SYXdVSS5CYWNr
+echo Z3JvdW5kQ29sb3IgPSAnQmxhY2snDQogICAgICAgICRIb3N0LlVJLlJhd1VJLkZvcmVncm91bmRD
+echo b2xvciA9ICdHcmF5Jw0KICAgICAgICBDbGVhci1Ib3N0DQogICAgfSBjYXRjaCB7fQ0KfQ0KDQpm
+echo dW5jdGlvbiBTaG93LU1lbnUgew0KICAgIFNldC1UaGVtZQ0KICAgICRhcnQgPSBAKA0KICAgICAg
+echo ICAnICAgICBfX19fX18gX19fX18gX18gICBfXycsDQogICAgICAgICcgICAgfCAgX19fX3xfICAg
+echo X3xcIFwgLyAvJywNCiAgICAgICAgJyAgICB8IHxfXyAgICB8IHwgICBcIFYgLyAnLA0KICAgICAg
+echo ICAnICAgIHwgIF9ffCAgIHwgfCAgICA+IDwgICcsDQogICAgICAgICcgICAgfCB8ICAgICBffCB8
+echo XyAgLyAuIFwgJywNCiAgICAgICAgJyAgICB8X3wgICAgfF9fX19ffC9fLyBcX1wnDQogICAgKQ0K
+echo ICAgIFdyaXRlLUhvc3QgJycNCiAgICBmb3JlYWNoICgkbGluZSBpbiAkYXJ0KSB7IFdyaXRlLUhv
+echo c3QgJGxpbmUgLUZvcmVncm91bmRDb2xvciBDeWFuIH0NCiAgICBXcml0ZS1Ib3N0ICcnDQogICAg
+echo V3JpdGUtSG9zdCAnICA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09
+echo PT09PT09PT0nIC1Gb3JlZ3JvdW5kQ29sb3IgRGFya0N5YW4NCiAgICBXcml0ZS1Ib3N0ICcgICBE
+echo RyBSZWFkaW5lc3MgRml4IC0gRGV2aWNlIEd1YXJkIC8gQ3JlZCBHdWFyZCAvIEhWQ0knIC1Gb3Jl
+echo Z3JvdW5kQ29sb3IgV2hpdGUNCiAgICBXcml0ZS1Ib3N0ICcgID09PT09PT09PT09PT09PT09PT09
+echo PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PScgLUZvcmVncm91bmRDb2xvciBEYXJrQ3lh
+echo bg0KICAgIFdyaXRlLUhvc3QgJycNCiAgICBXcml0ZS1Ib3N0ICcgICBQcmVzcyAnIC1Ob05ld2xp
+echo bmUgLUZvcmVncm91bmRDb2xvciBHcmF5DQogICAgV3JpdGUtSG9zdCAnW0YzXScgLU5vTmV3bGlu
+echo ZSAtRm9yZWdyb3VuZENvbG9yIEdyZWVuDQogICAgV3JpdGUtSG9zdCAnIHRvIGZpeCBpc3N1ZScg
+echo LUZvcmVncm91bmRDb2xvciBHcmF5DQogICAgV3JpdGUtSG9zdCAnICAgUHJlc3MgJyAtTm9OZXds
+echo aW5lIC1Gb3JlZ3JvdW5kQ29sb3IgR3JheQ0KICAgIFdyaXRlLUhvc3QgJ1tFc2NdJyAtTm9OZXds
+echo aW5lIC1Gb3JlZ3JvdW5kQ29sb3IgRGFya1llbGxvdw0KICAgIFdyaXRlLUhvc3QgJyB0byBxdWl0
+echo JyAtRm9yZWdyb3VuZENvbG9yIEdyYXkNCiAgICBXcml0ZS1Ib3N0ICcnDQp9DQoNCmZ1bmN0aW9u
+echo IFdhaXQtRm9ySG90a2V5IHsNCiAgICB3aGlsZSAoJHRydWUpIHsNCiAgICAgICAgJGtleSA9ICRI
+echo b3N0LlVJLlJhd1VJLlJlYWRLZXkoJ05vRWNobyxJbmNsdWRlS2V5RG93bicpDQogICAgICAgIHN3
+echo aXRjaCAoJGtleS5WaXJ0dWFsS2V5Q29kZSkgew0KICAgICAgICAgICAgMTE0IHsgcmV0dXJuICdG
+echo SVgnIH0gICAjIEYzDQogICAgICAgICAgICAyNyAgeyByZXR1cm4gJ1FVSVQnIH0gICMgRXNjDQog
+echo ICAgICAgIH0NCiAgICB9DQp9DQoNCmZ1bmN0aW9uIFNob3ctU3Bpbm5lciB7DQogICAgcGFyYW0o
+echo W3N0cmluZ10kVGV4dCwgW2ludF0kVGlja3MgPSAxMikNCiAgICAkZnJhbWVzID0gJ3wnLCcvJywn
+echo LScsJ1wnDQogICAgZm9yICgkaSA9IDA7ICRpIC1sdCAkVGlja3M7ICRpKyspIHsNCiAgICAgICAg
+echo JGYgPSAkZnJhbWVzWyRpICUgJGZyYW1lcy5Db3VudF0NCiAgICAgICAgV3JpdGUtSG9zdCAoImBy
+echo ICAgWyRmXSAkVGV4dCIpIC1Ob05ld2xpbmUgLUZvcmVncm91bmRDb2xvciBZZWxsb3cNCiAgICAg
+echo ICAgU3RhcnQtU2xlZXAgLU1pbGxpc2Vjb25kcyA5MA0KICAgIH0NCiAgICBXcml0ZS1Ib3N0ICgi
+echo YHIgICBbT0tdICRUZXh0IikgLUZvcmVncm91bmRDb2xvciBHcmVlbg0KfQ0KDQpmdW5jdGlvbiBB
+echo c2stWWVzTm8gew0KICAgIHBhcmFtKFtzdHJpbmddJFF1ZXN0aW9uKQ0KICAgIHdoaWxlICgkdHJ1
+echo ZSkgew0KICAgICAgICBXcml0ZS1Ib3N0ICcnDQogICAgICAgIFdyaXRlLUhvc3QgKCIgICAkUXVl
+echo c3Rpb24gKFkvTik6ICIpIC1Ob05ld2xpbmUgLUZvcmVncm91bmRDb2xvciBDeWFuDQogICAgICAg
+echo ICRrID0gJEhvc3QuVUkuUmF3VUkuUmVhZEtleSgnTm9FY2hvLEluY2x1ZGVLZXlEb3duJykNCiAg
+echo ICAgICAgc3dpdGNoICgkay5WaXJ0dWFsS2V5Q29kZSkgew0KICAgICAgICAgICAgODkgeyBXcml0
+echo ZS1Ib3N0ICdZJyAtRm9yZWdyb3VuZENvbG9yIEdyZWVuOyByZXR1cm4gJHRydWUgfSAgICMgWQ0K
+echo ICAgICAgICAgICAgNzggeyBXcml0ZS1Ib3N0ICdOJyAtRm9yZWdyb3VuZENvbG9yIFllbGxvdzsg
+echo cmV0dXJuICRmYWxzZSB9ICMgTg0KICAgICAgICB9DQogICAgfQ0KfQ0KDQp0cnkgew0KICAgICRw
+echo cmluY2lwYWwgPSBOZXctT2JqZWN0IFNlY3VyaXR5LlByaW5jaXBhbC5XaW5kb3dzUHJpbmNpcGFs
+echo KFtTZWN1cml0eS5QcmluY2lwYWwuV2luZG93c0lkZW50aXR5XTo6R2V0Q3VycmVudCgpKQ0KICAg
+echo ICRwb3dlcnNoZWxsID0gSm9pbi1QYXRoICRlbnY6U3lzdGVtUm9vdCAnU3lzdGVtMzJcV2luZG93
+echo c1Bvd2VyU2hlbGxcdjEuMFxwb3dlcnNoZWxsLmV4ZScNCiAgICBpZiAoLW5vdCAkcHJpbmNpcGFs
+echo LklzSW5Sb2xlKFtTZWN1cml0eS5QcmluY2lwYWwuV2luZG93c0J1aWx0SW5Sb2xlXTo6QWRtaW5p
+echo c3RyYXRvcikpIHsNCiAgICAgICAgV3JpdGUtSG9zdCAnQXBwcm92ZSB0aGUgV2luZG93cyBhZG1p
+echo bmlzdHJhdG9yIHByb21wdCB0byBjb250aW51ZS4nDQogICAgICAgICRhcmd1bWVudHMgPSAnLU5v
+echo UHJvZmlsZSAtRXhlY3V0aW9uUG9saWN5IEJ5cGFzcyAtRmlsZSAiezB9IicgLWYgJFBTQ29tbWFu
+echo ZFBhdGgNCiAgICAgICAgJGVsZXZhdGVkID0gU3RhcnQtUHJvY2VzcyAtRmlsZVBhdGggJHBvd2Vy
+echo c2hlbGwgLVZlcmIgUnVuQXMgLUFyZ3VtZW50TGlzdCAkYXJndW1lbnRzIC1XYWl0IC1QYXNzVGhy
+echo dQ0KICAgICAgICBpZiAoJGVsZXZhdGVkLkV4aXRDb2RlIC1uZSAwKSB7IHRocm93ICJBZG1pbmlz
+echo dHJhdG9yIHByb2Nlc3MgZXhpdGVkIHdpdGggY29kZSAkKCRlbGV2YXRlZC5FeGl0Q29kZSkuIiB9
+echo DQogICAgICAgIHJldHVybg0KICAgIH0NCg0KICAgIFNob3ctTWVudQ0KICAgICRjaG9pY2UgPSBX
+echo YWl0LUZvckhvdGtleQ0KICAgIGlmICgkY2hvaWNlIC1lcSAnUVVJVCcpIHsgU2V0LVRoZW1lOyBX
+echo cml0ZS1Ib3N0ICdDYW5jZWxsZWQuJyAtRm9yZWdyb3VuZENvbG9yIFllbGxvdzsgcmV0dXJuIH0N
+echo Cg0KICAgIFNldC1UaGVtZQ0KICAgIFdyaXRlLUhvc3QgJycNCiAgICBXcml0ZS1Ib3N0ICcgICBT
+echo dGFydGluZyBmaXguLi4nIC1Gb3JlZ3JvdW5kQ29sb3IgQ3lhbg0KICAgIFdyaXRlLUhvc3QgJycN
+echo Cg0KICAgICR3b3JrID0gSm9pbi1QYXRoICRlbnY6TE9DQUxBUFBEQVRBICgnREdGSVhcUnVuLScg
+echo KyAoR2V0LURhdGUgLUZvcm1hdCAneXl5eU1NZGQtSEhtbXNzJykgKyAnLScgKyBbZ3VpZF06Ok5l
+echo d0d1aWQoKS5Ub1N0cmluZygnTicpLlN1YnN0cmluZygwLDgpKQ0KICAgIE5ldy1JdGVtIC1JdGVt
+echo VHlwZSBEaXJlY3RvcnkgLVBhdGggJHdvcmsgLUZvcmNlIHwgT3V0LU51bGwNCiAgICAkbG9nID0g
+echo Sm9pbi1QYXRoICR3b3JrICdER0ZJWC1sb2cudHh0Jw0KICAgIFN0YXJ0LVRyYW5zY3JpcHQgLVBh
+echo dGggJGxvZyAtRm9yY2UgfCBPdXQtTnVsbA0KICAgICR0cmFuc2NyaWJpbmcgPSAkdHJ1ZQ0KDQog
+echo ICAgV3JpdGUtSG9zdCAiICAgTG9ncyBhbmQgZG93bmxvYWRlZCBmaWxlczogJHdvcmsiIC1Gb3Jl
+echo Z3JvdW5kQ29sb3IgRGFya0dyYXkNCiAgICAkemlwID0gSm9pbi1QYXRoICR3b3JrICdkZ3JlYWRp
+echo bmVzcy56aXAnDQogICAgJGV4dHJhY3QgPSBKb2luLVBhdGggJHdvcmsgJ1Rvb2wnDQogICAgW05l
+echo dC5TZXJ2aWNlUG9pbnRNYW5hZ2VyXTo6U2VjdXJpdHlQcm90b2NvbCA9IFtOZXQuU2VydmljZVBv
+echo aW50TWFuYWdlcl06OlNlY3VyaXR5UHJvdG9jb2wgLWJvciBbTmV0LlNlY3VyaXR5UHJvdG9jb2xU
+echo eXBlXTo6VGxzMTINCiAgICAkUHJvZ3Jlc3NQcmVmZXJlbmNlID0gJ1NpbGVudGx5Q29udGludWUn
+echo DQoNCiAgICBTaG93LVNwaW5uZXIgLVRleHQgJ1ByZXBhcmluZy4uLicgLVRpY2tzIDgNCiAgICBX
+echo cml0ZS1Ib3N0ICcgICBbMS8zXSBEb3dubG9hZGluZyBNaWNyb3NvZnQgdG9vbC4uLicgLUZvcmVn
+echo cm91bmRDb2xvciBXaGl0ZQ0KICAgIEludm9rZS1XZWJSZXF1ZXN0IC1VcmkgJ2h0dHBzOi8vZG93
+echo bmxvYWQubWljcm9zb2Z0LmNvbS9kb3dubG9hZC9iL2QvOC9iZDgyMWIxZi0wNWYyLTRhN2UtYWEw
+echo My1kZjZjNGY2ODdiMDcvZGdyZWFkaW5lc3NfdjMuNi56aXAnIC1PdXRGaWxlICR6aXAgLVVzZUJh
+echo c2ljUGFyc2luZyAtVGltZW91dFNlYyAxMjANCiAgICBTaG93LVNwaW5uZXIgLVRleHQgJ0Rvd25s
+echo b2FkIGNvbXBsZXRlJyAtVGlja3MgNA0KDQogICAgV3JpdGUtSG9zdCAnICAgWzIvM10gRXh0cmFj
+echo dGluZy4uLicgLUZvcmVncm91bmRDb2xvciBXaGl0ZQ0KICAgIEV4cGFuZC1BcmNoaXZlIC1MaXRl
+echo cmFsUGF0aCAkemlwIC1EZXN0aW5hdGlvblBhdGggJGV4dHJhY3QgLUZvcmNlDQogICAgU2hvdy1T
+echo cGlubmVyIC1UZXh0ICdFeHRyYWN0ZWQnIC1UaWNrcyA0DQoNCiAgICAkY2FuZGlkYXRlcyA9IEAo
+echo R2V0LUNoaWxkSXRlbSAtTGl0ZXJhbFBhdGggJGV4dHJhY3QgLUZpbHRlciAnKi5wczEnIC1SZWN1
+echo cnNlIHwgV2hlcmUtT2JqZWN0IHsgJF8uTmFtZSAtbWF0Y2ggJ0RHX1JlYWRpbmVzcycgfSkNCiAg
+echo ICBpZiAoJGNhbmRpZGF0ZXMuQ291bnQgLW5lIDEpIHsgdGhyb3cgIkV4cGVjdGVkIG9uZSBERyBS
+echo ZWFkaW5lc3Mgc2NyaXB0OyBmb3VuZCAkKCRjYW5kaWRhdGVzLkNvdW50KS4gRmlsZXMgcmV0YWlu
+echo ZWQgYXQgJGV4dHJhY3QiIH0NCiAgICAkdG9vbCA9ICRjYW5kaWRhdGVzWzBdDQoNCiAgICBXcml0
+echo ZS1Ib3N0ICcgICBbMy8zXSBSdW5uaW5nIE1pY3Jvc29mdCB0b29sIC1EaXNhYmxlLi4uJyAtRm9y
+echo ZWdyb3VuZENvbG9yIFdoaXRlDQogICAgJHN0ZG91dCA9IEpvaW4tUGF0aCAkd29yayAnTWljcm9z
+echo b2Z0LXRvb2wtb3V0cHV0LnR4dCcNCiAgICAkc3RkZXJyID0gSm9pbi1QYXRoICR3b3JrICdNaWNy
+echo b3NvZnQtdG9vbC1lcnJvcnMudHh0Jw0KICAgICRhcmdzRm9yVG9vbCA9ICctTm9Qcm9maWxlIC1F
+echo eGVjdXRpb25Qb2xpY3kgQnlwYXNzIC1GaWxlICJ7MH0iIC1EaXNhYmxlJyAtZiAkdG9vbC5GdWxs
+echo TmFtZQ0KICAgICRwcm9jZXNzID0gU3RhcnQtUHJvY2VzcyAtRmlsZVBhdGggJHBvd2Vyc2hlbGwg
+echo LUFyZ3VtZW50TGlzdCAkYXJnc0ZvclRvb2wgLVdvcmtpbmdEaXJlY3RvcnkgJHRvb2wuRGlyZWN0
+echo b3J5TmFtZSAtTm9OZXdXaW5kb3cgLVdhaXQgLVBhc3NUaHJ1IC1SZWRpcmVjdFN0YW5kYXJkT3V0
+echo cHV0ICRzdGRvdXQgLVJlZGlyZWN0U3RhbmRhcmRFcnJvciAkc3RkZXJyDQogICAgaWYgKFRlc3Qt
+echo UGF0aCAkc3Rkb3V0KSB7IEdldC1Db250ZW50ICRzdGRvdXQgfCBGb3JFYWNoLU9iamVjdCB7IFdy
+echo aXRlLUhvc3QgJF8gfSB9DQogICAgaWYgKFRlc3QtUGF0aCAkc3RkZXJyKSB7IEdldC1Db250ZW50
+echo ICRzdGRlcnIgfCBGb3JFYWNoLU9iamVjdCB7IFdyaXRlLUhvc3QgJF8gLUZvcmVncm91bmRDb2xv
+echo ciBZZWxsb3cgfSB9DQogICAgaWYgKCRwcm9jZXNzLkV4aXRDb2RlIC1uZSAwKSB7IHRocm93ICJN
+echo aWNyb3NvZnQgdG9vbCByZXR1cm5lZCBjb2RlICQoJHByb2Nlc3MuRXhpdENvZGUpLiBSZXZpZXcg
+echo dGhlIGxvZ3MgYWJvdmU7IGNvbXBsZXRpb24gaXMgbm90IGNvbmZpcm1lZC4iIH0NCiAgICBpZiAo
+echo KEdldC1JdGVtICRzdGRlcnIpLkxlbmd0aCAtZ3QgMCkgeyB0aHJvdyAnTWljcm9zb2Z0IHRvb2wg
+echo d3JvdGUgZXJyb3JzLiBSZXZpZXcgTWljcm9zb2Z0LXRvb2wtZXJyb3JzLnR4dDsgY29tcGxldGlv
+echo biBpcyBub3QgY29uZmlybWVkLicgfQ0KDQogICAgV3JpdGUtSG9zdCAnJw0KICAgIFdyaXRlLUhv
+echo c3QgJyAgID09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09
+echo PScgLUZvcmVncm91bmRDb2xvciBEYXJrR3JlZW4NCiAgICBXcml0ZS1Ib3N0ICcgICAgTWljcm9z
+echo b2Z0IHRvb2wgZXhpdGVkIHdpdGggY29kZSAwLicgLUZvcmVncm91bmRDb2xvciBHcmVlbg0KICAg
+echo IFdyaXRlLUhvc3QgJyAgICBBIHJlc3RhcnQgaXMgcmVxdWlyZWQgdG8gYXBwbHkgdGhlIGNoYW5n
+echo ZXMuJyAtRm9yZWdyb3VuZENvbG9yIEdyZWVuDQogICAgV3JpdGUtSG9zdCAnICAgIEZvbGxvdyBh
+echo bnkgZmlybXdhcmUgY29uZmlybWF0aW9uIHNob3duIGF0IHJlc3RhcnQuJyAtRm9yZWdyb3VuZENv
+echo bG9yIFllbGxvdw0KICAgIFdyaXRlLUhvc3QgJyAgICBBbiBleGl0IGNvZGUgYWxvbmUgZG9lcyBu
+echo b3QgY29uZmlybSBpdCBpcyBkaXNhYmxlZC4nIC1Gb3JlZ3JvdW5kQ29sb3IgRGFya0dyYXkNCiAg
+echo ICBXcml0ZS1Ib3N0ICcgICA9PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09PT09
+echo PT09PT09PT09PT0nIC1Gb3JlZ3JvdW5kQ29sb3IgRGFya0dyZWVuDQoNCiAgICBpZiAoQXNrLVll
+echo c05vIC1RdWVzdGlvbiAnUmVzdGFydCBQQyBub3c/Jykgew0KICAgICAgICBpZiAoJHRyYW5zY3Jp
+echo YmluZykgeyBTdG9wLVRyYW5zY3JpcHQgLUVycm9yQWN0aW9uIFNpbGVudGx5Q29udGludWUgfCBP
+echo dXQtTnVsbDsgJHRyYW5zY3JpYmluZyA9ICRmYWxzZSB9DQogICAgICAgIFdyaXRlLUhvc3QgJyAg
+echo IFJlc3RhcnRpbmcgaW4gNSBzZWNvbmRzLi4uIChjbG9zZSB0aGlzIHdpbmRvdyB0byBjYW5jZWwp
+echo JyAtRm9yZWdyb3VuZENvbG9yIFllbGxvdw0KICAgICAgICBTdGFydC1TbGVlcCAtU2Vjb25kcyA1
+echo DQogICAgICAgIFJlc3RhcnQtQ29tcHV0ZXIgLUZvcmNlDQogICAgfSBlbHNlIHsNCiAgICAgICAg
+echo V3JpdGUtSG9zdCAnICAgUmVzdGFydCBza2lwcGVkLiBSZXN0YXJ0IG1hbnVhbGx5IGxhdGVyIHRv
+echo IGFwcGx5IGNoYW5nZXMuJyAtRm9yZWdyb3VuZENvbG9yIFllbGxvdw0KICAgIH0NCn0gY2F0Y2gg
+echo ew0KICAgIFdyaXRlLUhvc3QgImBuICAgW0VSUk9SXSAkKCRfLkV4Y2VwdGlvbi5NZXNzYWdlKSIg
+echo LUZvcmVncm91bmRDb2xvciBSZWQNCiAgICBXcml0ZS1Ib3N0ICgnICAgJyArICRfLkludm9jYXRp
+echo b25JbmZvLlBvc2l0aW9uTWVzc2FnZSkgLUZvcmVncm91bmRDb2xvciBEYXJrR3JheQ0KICAgIGlm
+echo ICgkd29yaykgeyBXcml0ZS1Ib3N0ICIgICBLZWVwIHRoZSBmaWxlcyBpbjogJHdvcmsiIH0NCn0g
+echo ZmluYWxseSB7DQogICAgaWYgKCR0cmFuc2NyaWJpbmcpIHsgU3RvcC1UcmFuc2NyaXB0IC1FcnJv
+echo ckFjdGlvbiBTaWxlbnRseUNvbnRpbnVlIHwgT3V0LU51bGwgfQ0KICAgIFJlYWQtSG9zdCAiYG4g
+echo ICBQcmVzcyBFbnRlciB0byBjbG9zZSB0aGlzIHdpbmRvdyIgfCBPdXQtTnVsbA0KfQ0K
+) > "%B64%"
+
+rem ---- Decode Base64 -> DGFIX.ps1 ----
+certutil -decode "%B64%" "%PS1%" >nul 2>&1
+del "%B64%" >nul 2>&1
 
 if not exist "%PS1%" (
-    echo Failed to write DGFIX.ps1
+    echo Failed to decode DGFIX.ps1
     pause
     exit /b 1
 )
 
-echo Wrote "%PS1%"
-echo Launching PowerShell (you will see a UAC administrator prompt)...
+echo Launching menu (approve the UAC administrator prompt when it appears)...
 echo.
 
-rem ---- Run the PS1; it self-elevates via UAC ----
+rem ---- Run the PS1; it shows the menu and self-elevates ----
 "%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%PS1%"
 
-echo.
-echo If an error appeared, take a screenshot before closing.
-pause
 endlocal
